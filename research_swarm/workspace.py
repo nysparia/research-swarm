@@ -129,6 +129,12 @@ class WorkspaceApplication:
         if not app or record['phase'] != 'researching':
             return
         state = app.snapshot()
+        decision = state['project'].get('researchDecision')
+        if decision and record.get('shownDecisionId') != decision['id']:
+            from .research_contracts import decision_message
+            self._message(record, 'assistant', decision_message(decision), 'progress')
+            record['shownDecisionId'] = decision['id']
+            self._save(record)
         if state['status'] == 'completed':
             record['phase'] = 'completed'
             record['round'] = state['project']['round']
@@ -283,7 +289,8 @@ class WorkspaceApplication:
                 metadata = (record['title'], record['document']['markdown'], record['imported'])
             from .sources import prepare_source
             prepare_source(self.source, self._data_root / task_id / 'source', task_id, metadata[0], metadata[1], import_existing=metadata[2])
-            if not imported:
+            model_cycle = self.settings.public()['capabilities']['modelReady']
+            if not imported and not model_cycle:
                 for query in compiled['queries']:
                     with self._lock:
                         record = self._record(task_id)
@@ -305,11 +312,11 @@ class WorkspaceApplication:
                     if state['project'].get('researchStarted') or state['report'].get('ready') or record['runs']:
                         app.engine.command('next-round', {})
                     mode = 'llm' if self.settings.public()['capabilities']['modelReady'] else 'evidence'
-                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown']})
+                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm'})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']
-                    self._message(record, 'assistant', f'已建立 {len(state["facetNodes"])} 个资料节点，开始分解研究问题。将根据证据缺口继续安排研究，完成后直接汇总结果。' + (' 当前未配置模型，执行已有资料核验。' if mode == 'evidence' else ''), 'progress')
+                    self._message(record, 'assistant', '先扩充研究背景、检索文献并凝练课题，再提出猜想、索求数据；证据不足时设计与执行实验，数据返回后重新论证。研究取舍会暂停并在对话中请你决定。' if mode == 'llm' else f'已建立 {len(state["facetNodes"])} 个资料节点，开始已有资料核验。当前未配置模型。', 'progress')
                     self._save(record)
         except Exception as exc:
             with self._lock:
@@ -327,6 +334,11 @@ class WorkspaceApplication:
         if not isinstance(text, str) or not text.strip() or len(text) > 60000:
             raise ValueError('请输入 1 至 60000 字符的研究需求')
         with self._lock:
+            restore_runtime = self._record(task_id)['phase'] == 'researching' and task_id not in self._apps
+        # App restoration takes _apps_lock before _lock; do not invert that order.
+        if restore_runtime:
+            self._ensure_app(task_id)
+        with self._lock:
             if self._configuring:
                 raise ValueError('正在验证模型配置，请稍后再试')
             record = self._record(task_id)
@@ -334,8 +346,24 @@ class WorkspaceApplication:
             if editing and payload.get('expectedRevision') != record['document']['revision']:
                 raise ValueError('需求文档版本已变化，请保留本地修改并重新同步')
             app = self._apps.get(task_id)
+            if app and record['phase'] == 'researching' and not editing and not text.strip().startswith('修改需求：'):
+                state = app.engine.snapshot()
+                decision = state['project'].get('researchDecision')
+                if decision:
+                    answer = {'decisionId': decision['id'], 'expectedRevision': state['revision'], 'note': text.strip()}
+                    if text.strip().isdigit():
+                        answer.update(optionIndex=int(text.strip())-1, note='')
+                    app.engine.command('research-choice', answer)
+                    record['phase'], record['error'] = 'researching', None
+                    self._message(record, 'user', text)
+                    self._message(record, 'assistant', '已记录你的研究选择，继续据此取得数据并验证。', 'progress')
+                    self._save(record)
+                    return self.detail(task_id)
             if app:
                 app.post('/api/actions/pause', {})
+                project = app.engine.snapshot()['project']
+                if project.get('researchDecision'):
+                    app.engine.command('paper-context', {'paperContext': project.get('paperContext', {}), 'supersedeDecision': True})
             previous = record['document']['markdown']
             record['token'] += 1
             revision = record['document']['revision'] + 1
