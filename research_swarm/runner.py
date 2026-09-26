@@ -11,8 +11,6 @@ from pathlib import Path
 
 from .providers import parse_json_object
 from .tools import ResearchTools, experiment_statistics
-from .paper import validate_paper_output, ROLES
-from .paper_prompts import WORKER_PROMPT
 
 
 def validate_result(value: dict, library: dict) -> dict:
@@ -35,7 +33,6 @@ def validate_result(value: dict, library: dict) -> dict:
         return ids
 
     result['evidenceIds'] = evidence_ids(value.get('evidenceIds', []))
-    validate_paper_output(result['structured'], valid_ids)
     if not isinstance(value.get('claims', []), list):
         raise ValueError('候选判断必须为列表')
     for claim in value.get('claims', [])[:30]:
@@ -62,8 +59,6 @@ def validate_result(value: dict, library: dict) -> dict:
                 raise ValueError('子任务需要标题、明确需求和验收标准')
             t = {k: task.get(k, '') for k in ('title', 'description', 'acceptance', 'constraints')}
             t['kind'] = task.get('kind', 'evidence')
-            if task.get('specialist') in ROLES:
-                t['specialist'] = task['specialist']
             if t['kind'] not in ('research', 'evidence', 'experiment'):
                 raise ValueError('不支持的科研任务类型')
             if task.get('sourceNodeId') not in (None, ''):
@@ -76,7 +71,7 @@ def validate_result(value: dict, library: dict) -> dict:
                 raise ValueError('子任务引用的论文不存在')
             if task.get('children'):
                 t['children'] = children(task['children'], depth + 1)
-            # Proposed protocol is carried to the actual execution worker, not treated as a result.
+            # Model may propose an experiment design; actual execution inputs come from the user.
             if task.get('experimentDesign'):
                 t['experimentDesign'] = task['experimentDesign']
             normalized.append(t)
@@ -251,7 +246,7 @@ class ResearchRunner:
             elif result.get('limitations'):
                 log(f'论文 #{paper_id} 全文读取受限：' + '；'.join(result['limitations']))
             return result
-        if self.read_pdf and node.get('phase') == 'execute' and (not context.get('researchCycle') or node['input'].get('researchStep') in ('literature', 'data_source')):
+        if self.read_pdf and node.get('phase') == 'execute':
             for paper in sorted(papers, key=lambda p: bool(p.get('pdfAvailable')), reverse=True)[:2]:
                 read_material(paper['id'])
         pids = {p['id'] for p in papers}
@@ -282,31 +277,6 @@ class ResearchRunner:
         system += '\nsummary 直接回答用户的研究问题，用自然语言解释结果；不向用户复述 aggregate、execute、iteration、预算上限等调度字段。运行状态由界面单独展示。'
         if context.get('workflow') == 'autonomous':
             system += '\n当前为自主科研，不存在要求用户逐篇读论文或筛选推荐的固定步骤。你负责资料阅读和结果解释，面向用户直接给出清晰结果。仅中央节点 aggregate 阶段可依据明确证据缺口通过 followups 追加具体研究任务（结构同 children，最多4个）；iteration 达到 maxIterations 时必须总结成果和剩余局限，不能继续派发。不是每次都要追加，已有材料足够或缺少外部实验资源时直接输出。科学判断仍为可审查候选，不自行声称得到用户确认。'
-        if context.get('paperResearch'):
-            system = system.replace('最多 4 个且不超过 remainingTasks。优先直接执行，默认用 evidence 或 experiment 叶节点；仅不同学术子问题才建 research 节点，不能把取证、写模板、总结再次递归拆开。',
-                '根据论文范围形成专业研究小组，复杂课题可先安排 6–8 组，各组分解有独立产物的任务；不超过 remainingTasks 和 remainingDepth。可直接完成的工作使用 evidence 或 experiment 叶节点，不重复分解。')
-            system += WORKER_PROMPT
-            inputs['paperContext'] = context.get('paperContext', {})
-            inputs['researchChoices'] = context.get('researchChoices', [])
-        research_step = node.get('input', {}).get('researchStep') if context.get('researchCycle') else None
-        if research_step:
-            from .research_cycle_prompts import prompt_for
-            system += prompt_for(research_step, node['phase'])
-            inputs['researchCycle'] = context['researchCycle']
-            inputs['upstreamResults'] = [{k: n.get(k) for k in ('id', 'title', 'output')} for n in context.get('upstreamResults', [])]
-            if research_step == 'experiment_design' and node['phase'] == 'aggregate' and self.local_tools and context.get('children'):
-                latest = context['children'][-1]
-                run = (latest.get('output') or {}).get('structured', {}).get('experimentRun', {})
-                materials = []
-                for key in ('script', 'metricsArtifact', 'rawDataArtifact'):
-                    if not run.get(key): continue
-                    try:
-                        read = self.local_tools.call('artifact_read', {'path': run[key], 'preview': True}, node, context, log)
-                        materials.append({**read, 'text': read['text'][:48000]})
-                        log('设计节点读取当前实验材料：' + read['path'])
-                    except (OSError, ValueError) as exc:
-                        materials.append({'path': run[key], 'error': str(exc)})
-                inputs['experimentReviewMaterials'] = materials
         messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': json.dumps(inputs, ensure_ascii=False)}]
         tools = ResearchTools(library, read_material if self.read_pdf else None)
         validation_retries, tool_rounds = 0, 0
@@ -327,11 +297,6 @@ class ResearchRunner:
                     raise ValueError('toolCalls 必须为含 name 和 arguments 对象的列表')
                 if not calls:
                     final = validate_result(result, library)
-                    if research_step:
-                        from .research_cycle import validate_output
-                        validate_output(research_step, node['phase'], final['structured'], {e['id'] for e in library.get('evidence', [])}, node['input'].get('hypothesisId'))
-                        if any(not c['evidenceIds'] for c in final['claims']):
-                            raise ValueError('研究判断必须有来源；猜想放 hypotheses，缺口放 unresolved')
                     if any(c.get('sourceNodeId') == node.get('sourceNodeId') and c.get('sourceNodeId') is not None for c in final.get('children', [])):
                         raise ValueError('不能将需求派回同一切面节点；子任务请省略 sourceNodeId 或选择其下级切面')
             except ValueError as exc:
@@ -339,32 +304,20 @@ class ResearchRunner:
                     raise
                 validation_retries += 1
                 log('节点输出未通过证据/结构校验，正在纠正 1/1：' + str(exc)[:600])
-                repair = ('未验证的想法放在阶段猜想字段或 unresolved，不得放入 claims；完成当前阶段结构，不要创建 children/followups。'
-                          if research_step else '无法支持的判断使用 evidenceIds=[] 并说明局限；没有对应切面的子任务省略 sourceNodeId。')
-                messages.extend([{'role': 'assistant', 'content': raw}, {'role': 'user', 'content': '输出校验失败：' + str(exc)[:600] + '。只可使用提供的实际 ID；' + repair + '请返回纠正后的完整 JSON，不能捏造新的引用。'}])
+                messages.extend([{'role': 'assistant', 'content': raw}, {'role': 'user', 'content': '输出校验失败：' + str(exc)[:600] + '。只可使用提供的实际 ID；无法支持的判断使用 evidenceIds=[] 并说明局限；没有对应切面的子任务省略 sourceNodeId。请返回纠正后的完整 JSON，不能捏造新的引用。'}])
                 continue
             if not calls:
-                waiting_decision = bool(context.get('paperResearch') and final['structured'].get('researchDecision'))
                 if (self.local_tools and node.get('kind') == 'experiment' and node.get('phase') == 'execute'
                         and not any(e.get('tool') == 'python_run' and e.get('status') == 'completed' for e in executions)):
-                    if waiting_decision:
-                        # Preserve the user's gate, but never promote unexecuted experimental claims or prose.
-                        decision = final['structured']['researchDecision']
-                        design = final['structured'].get('experimentDesign')
-                        final = {'summary': '实验等待用户判断：' + decision['question'], 'claims': [], 'evidenceIds': [],
-                                 'structured': {'researchDecision': decision}, 'unresolved': ['用户选择后再执行实验并核验。']}
-                        if design is not None:
-                            final['structured']['experimentDesign'] = design
-                    elif not execution_reminders and step < max_steps-1:
+                    if not execution_reminders and step < max_steps-1:
                         execution_reminders += 1
                         log('拒收未经实际执行的实验结果：本节点尚无成功 python_run 凭据，要求执行或修复后重测。')
                         messages.extend([{'role':'assistant','content':raw}, {'role':'user','content':
                             '执行校验未通过：本次节点没有成功的 python_run 记录。不能声称已经训练、修复、重测或验证成功，历史凭据不代表本次完成。请立即调用本机工具执行本节点实验，基于新返回的真实数据写结论。若实际阻塞不可解决，只能说明未执行及具体阻塞原因。'}])
                         continue
-                    else:
-                        final = {'summary':'本节点未产生成功的本机实验凭据，实验尚未执行完成；未采纳模型未经执行支持的实测声明。',
-                                 'claims':[], 'evidenceIds':[], 'structured':{},
-                                 'unresolved':['本次实验缺少成功的 python_run 执行凭据，需继续执行并核验验收项。']}
+                    final = {'summary':'本节点未产生成功的本机实验凭据，实验尚未执行完成；未采纳模型未经执行支持的实测声明。',
+                             'claims':[], 'evidenceIds':[], 'structured':{},
+                             'unresolved':['本次实验缺少成功的 python_run 执行凭据，需继续执行并核验验收项。']}
                 originals = [dict(c, nodeId=c.get('nodeId') or child.get('id')) for child in context.get('children', []) for c in (child.get('output') or {}).get('claims', [])]
                 origins = {c.get('id'): c for c in originals}
                 def same_material(a, b):
@@ -389,8 +342,8 @@ class ResearchRunner:
                     final['structured']['executions'] = executions
                 if node.get('kind') == 'experiment' and node.get('phase') == 'execute':
                     ran = any(e.get('tool') == 'python_run' and e.get('status') == 'completed' for e in executions)
-                    final['structured']['status'] = 'executed' if ran else 'awaiting_user' if waiting_decision else 'needs_execution'
-                    if not ran and not waiting_decision:
+                    final['structured']['status'] = 'executed' if ran else 'needs_execution'
+                    if not ran:
                         final['unresolved'].append('该实验节点未成功执行本机实验；设计说明不能计作实测完成。')
                 return final
             if tool_rounds >= max_steps-1 or not isinstance(calls, list) or len(calls) > 4:
@@ -399,10 +352,6 @@ class ResearchRunner:
             observations = []
             for call in calls:
                 name = call.get('name', '')
-                if research_step and ((name in ('python_run', 'python_install') and research_step != 'experiment_execution') or
-                             (research_step == 'experiment_execution' and name == 'paper_retrieve')):
-                    observations.append({'name': name, 'result': {'error': '本节点负责当前阶段。实验协议变更请上报设计节点；执行工具只交给实验执行节点。'}})
-                    continue
                 log('调用科研资料工具：' + name)
                 if self.local_tools and name in self.local_tools.names:
                     try:
@@ -413,7 +362,7 @@ class ResearchRunner:
                         generated.append(e)
                         library.setdefault('evidence',[]).append(e)
                     if 'evidence' in result:
-                        executions.append({k:result.get(k) for k in ('tool','status','returnCode','elapsedMs','artifacts','script','scriptSha256','scriptChanged','stdoutPath','stderrPath')})
+                        executions.append({k:result.get(k) for k in ('tool','status','returnCode','elapsedMs','artifacts','script','stdoutPath','stderrPath')})
                 elif name == 'paper_retrieve':
                     if not allow_search:
                         raise ValueError('该节点尚未获得补充外部检索授权')

@@ -30,26 +30,6 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '证据'):
             validate_result({'summary': 'claim', 'claims': [{'text': 'fast', 'evidenceIds': ['999']}]}, LIBRARY)
 
-    def test_experiment_can_request_a_user_decision_before_execution(self):
-        import json
-        from research_swarm.local_tools import LocalResearchTools
-        calls = []
-        decision = {'question': '先测精度还是延迟？', 'options': [
-            {'label': '精度', 'effect': '先做分类对照'}, {'label': '延迟', 'effect': '先测本机延迟'}]}
-        class Provider:
-            def chat(self, messages, **kwargs):
-                calls.append(messages)
-                return json.dumps({'summary': '需要用户判断', 'claims': [{'text': '未经执行的结果', 'evidenceIds': []}],
-                    'structured': {'researchDecision': decision, 'paperSections': [{'id': 'results', 'markdown': '未执行的结果', 'evidenceIds': []}]}})
-        runner = ResearchRunner(Provider(), Path(self.temp.name), local_tools=LocalResearchTools(Path(self.temp.name)))
-        result = runner({'id': 'experiment', 'kind': 'experiment', 'phase': 'execute', 'input': {}},
-                        dict(self.context, mode='llm', paperResearch=True), lambda _: None)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(result['structured']['researchDecision'], decision)
-        self.assertEqual(result['claims'], [])
-        self.assertNotIn('paperSections', result['structured'])
-        self.assertEqual(result['structured']['status'], 'awaiting_user')
-
     def test_empty_optional_facet_reference_means_unassigned(self):
         task = {'title': '比较', 'description': '对比机制', 'acceptance': '说明局限', 'sourceNodeId': ''}
         result = validate_result({'summary': '计划', 'children': [task]}, LIBRARY)
@@ -72,31 +52,6 @@ class RunnerTests(unittest.TestCase):
         result = validate_result({'summary': 'candidate', 'claims': [{'text': 'fast', 'status': 'confirmed', 'evidenceIds': []}]}, LIBRARY)
         self.assertEqual(result['claims'][0]['status'], 'candidate')
         self.assertIn('无证据', result['claims'][0]['limitations'])
-
-    def test_research_stage_remains_validated_after_a_tool_round(self):
-        import json
-        class Provider:
-            replies = [json.dumps({'toolCalls': [{'name': 'paper_search', 'arguments': {'query': 'attention'}}]}),
-                       json.dumps({'summary': '研究现状', 'structured': {'literatureReview': {'summary': '有摘要', 'evidenceIds': ['10']}}, 'evidenceIds': ['10']})]
-            def chat(self, messages, **kwargs): return self.replies.pop(0)
-        result = ResearchRunner(Provider(), Path(self.temp.name))(
-            {'id': 'literature', 'phase': 'execute', 'input': {'researchStep': 'literature'}},
-            dict(self.context, mode='llm', researchCycle={'status': 'running'}), lambda _: None)
-        self.assertEqual(result['structured']['literatureReview']['evidenceIds'], ['10'])
-
-    def test_thinking_stage_cannot_execute_local_code(self):
-        import json
-        class Provider:
-            replies = [json.dumps({'toolCalls': [{'name': 'python_run', 'arguments': {'code': 'print(1)'}}]}),
-                       json.dumps({'summary': '背景', 'structured': {'background': {'context': '计算机研究', 'boundaries': 'CPU'}}})]
-            def chat(self, messages, **kwargs): return self.replies.pop(0)
-        class Local:
-            names = ('python_run',)
-            def call(self, *args): raise AssertionError('thinking stage executed code')
-        result = ResearchRunner(Provider(), Path(self.temp.name), local_tools=Local())(
-            {'id': 'background', 'phase': 'execute', 'input': {'researchStep': 'background'}},
-            dict(self.context, mode='llm', researchCycle={'status': 'running'}), lambda _: None)
-        self.assertIn('background', result['structured'])
 
     def test_audit_decomposes_then_grounds_leaf_without_model(self):
         root = self.runner({'id': 'central', 'phase': 'plan', 'kind': 'research', 'input': {}}, self.context, lambda _: None)

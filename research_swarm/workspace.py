@@ -12,8 +12,6 @@ from pathlib import Path
 
 from .providers import Settings, parse_json_object
 from .server import APP_ROOT, ResearchApplication, export_bundle, utc_now
-from .paper import new_paper, sync_paper, paper_view, edit_section, validate_topics, export_paper, source_signature, BUDGETS
-from .paper_prompts import TOPIC_PROMPT
 
 
 def identity():
@@ -21,7 +19,7 @@ def identity():
 
 
 class WorkspaceApplication:
-    def __init__(self, source: Path, state_dir: Path, max_workers=8, static_dir=None, import_existing=True):
+    def __init__(self, source: Path, state_dir: Path, max_workers=3, static_dir=None, import_existing=True):
         self.source = Path(source).resolve()
         self.state_dir = Path(state_dir).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -52,7 +50,6 @@ class WorkspaceApplication:
                     record['error'] = '上次服务停止，已保留需求和执行记录。可以继续研究。'
                     record['token'] += 1
                 self._records[record['id']] = record
-                record.setdefault('paper', new_paper())
             except (ValueError, KeyError, TypeError):
                 continue
         marker = self.state_dir / 'source-imported.json'
@@ -94,7 +91,7 @@ class WorkspaceApplication:
         record = {'id': task_id, 'title': title[:80], 'phase': 'empty', 'createdAt': utc_now(), 'updatedAt': utc_now(),
                   'round': 1, 'imported': imported, 'needsRetrieval': True, 'token': 0, 'error': None, 'messages': [], 'runs': [],
                   'document': {'markdown': '', 'revision': 0, 'polishing': False, 'polishedFrom': None, 'source': 'local', 'questions': [], 'error': None},
-                  'documentHistory': [], 'compiled': None, 'paper': new_paper()}
+                  'documentHistory': [], 'compiled': None}
         self._records[task_id] = record
         self._save(record)
         return record
@@ -132,8 +129,6 @@ class WorkspaceApplication:
         if not app or record['phase'] != 'researching':
             return
         state = app.snapshot()
-        if sync_paper(record['paper'], state):
-            self._save(record)
         if state['status'] == 'completed':
             record['phase'] = 'completed'
             record['round'] = state['project']['round']
@@ -164,8 +159,6 @@ class WorkspaceApplication:
                 path = self._data_root / task_id / 'reports' / f'round-{record["runs"][-1]["round"]}.json'
                 if path.is_file():
                     state = json.loads(path.read_text(encoding='utf-8'))
-            if sync_paper(record['paper'], state):
-                self._save(record)
             artifacts = []
             if record['phase'] == 'completed':
                 artifacts = [{'name': '研究报告与数据.zip', 'kind': 'archive', 'url': f'/api/tasks/{task_id}/export'},
@@ -173,8 +166,7 @@ class WorkspaceApplication:
             if state:
                 seen = set()
                 root = (self._data_root / task_id / 'runtime').resolve()
-                executions = [{**entry['execution'], 'valid': entry.get('valid') is True}
-                              for entry in reversed(state.get('history', [])) if entry.get('type') in ('tool-executed', 'tool-started')]
+                executions = [entry['execution'] for entry in state.get('history', []) if entry.get('type') == 'tool-executed']
                 executions.extend(execution for node in state.get('nodes', [])
                                   for execution in ((node.get('output') or {}).get('structured') or {}).get('executions', []))
                 for execution in executions:
@@ -186,14 +178,10 @@ class WorkspaceApplication:
                         if relative not in seen and path.is_relative_to(root / 'runs') and path.is_file():
                             seen.add(relative)
                             artifacts.append({'name': item.get('name') or path.name, 'kind': 'experiment',
-                                              'url': f'/api/tasks/{task_id}/artifacts/{relative}', 'path': relative,
-                                              'nodeId': execution.get('nodeId'), 'nodeVersion': execution.get('nodeVersion'),
-                                              'round': execution.get('round'), 'status': execution.get('status'),
-                                              'valid': bool(execution.get('valid')), 'createdAt': execution.get('createdAt')})
+                                              'url': f'/api/tasks/{task_id}/artifacts/{relative}'})
             return copy.deepcopy({'task': self._summary(record), 'phase': record['phase'], 'document': record['document'],
                                   'messages': record['messages'], 'state': state, 'error': record['error'], 'artifacts': artifacts,
-                                  'runs': record['runs'], 'paper': paper_view(record['paper'], state),
-                                  'modelReady': self.settings.public()['capabilities']['modelReady']})
+                                  'runs': record['runs'], 'modelReady': self.settings.public()['capabilities']['modelReady']})
 
     def _spawn(self, function, *args):
         thread = threading.Thread(target=function, args=args, daemon=True, name='research-conversation')
@@ -219,8 +207,7 @@ class WorkspaceApplication:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
 只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
-        prompt += TOPIC_PROMPT
-        result = parse_json_object(self.settings.chat([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}], max_tokens=8500, json_mode=True))
+        result = parse_json_object(self.settings.chat([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}], max_tokens=6500, json_mode=True))
         if not isinstance(result.get('markdown'), str) or not result['markdown'].strip() or len(result['markdown']) > 60000:
             raise ValueError('模型没有返回有效需求文档，用户编辑已保存，可重试润色')
         requirements = result.get('requirements')
@@ -237,7 +224,7 @@ class WorkspaceApplication:
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
                 'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': 'model', 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:4]], 'topics': []}
+                'queries': [q.strip()[:1000] for q in queries[:4]]}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
@@ -251,9 +238,6 @@ class WorkspaceApplication:
                 record['documentHistory'].append({'at': utc_now(), 'actor': 'AI' if result['source'] == 'model' else 'system', 'revision': revision + 1, 'markdown': result['markdown'], 'reason': result['summary']})
                 record['document'].update(markdown=result['markdown'], revision=revision + 1, polishing=False, polishedFrom=revision, source=result['source'], questions=result['questions'], error=None)
                 record['compiled'] = result
-                if not record['paper']['selectedTopicId']:
-                    record['paper']['topics'] = result.get('topics', [])
-                    record['paper']['revision'] += 1
                 record['title'] = result['title']
                 record['phase'] = 'requirements'
                 self._message(record, 'assistant', result['summary'], 'requirements')
@@ -299,8 +283,7 @@ class WorkspaceApplication:
                 metadata = (record['title'], record['document']['markdown'], record['imported'])
             from .sources import prepare_source
             prepare_source(self.source, self._data_root / task_id / 'source', task_id, metadata[0], metadata[1], import_existing=metadata[2])
-            model_cycle = self.settings.public()['capabilities']['modelReady']
-            if not imported and not model_cycle:
+            if not imported:
                 for query in compiled['queries']:
                     with self._lock:
                         record = self._record(task_id)
@@ -322,12 +305,11 @@ class WorkspaceApplication:
                     if state['project'].get('researchStarted') or state['report'].get('ready') or record['runs']:
                         app.engine.command('next-round', {})
                     mode = 'llm' if self.settings.public()['capabilities']['modelReady'] else 'evidence'
-                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'],
-                        'paperResearch': True, 'researchCycle': mode == 'llm', 'paperContext': self._paper_context(record), 'budgetTier': record['paper'].get('budgetTier', 'swarm')})
+                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown']})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']
-                    self._message(record, 'assistant', f'已建立 {len(state["facetNodes"])} 个资料节点。接下来围绕论文的论点、基线与可验证实验安排专业节点，研究成果会持续写入论文。涉及研究方向的关键取舍会请你决定。' + (' 当前未配置模型，执行已有资料核验。' if mode == 'evidence' else ''), 'progress')
+                    self._message(record, 'assistant', f'已建立 {len(state["facetNodes"])} 个资料节点，开始分解研究问题。将根据证据缺口继续安排研究，完成后直接汇总结果。' + (' 当前未配置模型，执行已有资料核验。' if mode == 'evidence' else ''), 'progress')
                     self._save(record)
         except Exception as exc:
             with self._lock:
@@ -354,7 +336,6 @@ class WorkspaceApplication:
             app = self._apps.get(task_id)
             if app:
                 app.post('/api/actions/pause', {})
-                app.engine.command('paper-context', {'paperContext': self._paper_context(record), 'supersedeDecision': True})
             previous = record['document']['markdown']
             record['token'] += 1
             revision = record['document']['revision'] + 1
@@ -375,92 +356,6 @@ class WorkspaceApplication:
         if any(any(o['status'] == 'running' for o in app.operations) for app in self._apps.values()):
             return True
         return any(any(n['status'] == 'running' for n in app.engine.snapshot()['nodes']) or not app.engine.snapshot()['paused'] for app in self._apps.values())
-
-    @staticmethod
-    def _paper_context(record):
-        paper = record['paper']
-        return {'researchBudget': BUDGETS[paper.get('budgetTier', 'swarm')], 'selectedTopic': next((t for t in paper['topics'] if t['id'] == paper['selectedTopicId']), None),
-                'sections': [{k: (s[k][:6000] if k == 'markdown' else s[k]) for k in ('id', 'markdown', 'author', 'evidenceIds')}
-                             for s in paper['sections']], 'userContributions': paper['decisions'][-20:]}
-
-    def _paper_post(self, task_id, action, payload):
-        with self._lock:
-            record = self._record(task_id)
-            paper = record['paper']
-            app = self._apps.get(task_id)
-            if action == 'paper/budget':
-                if record['phase'] not in ('empty', 'requirements'):
-                    raise ValueError('运行中的研究请先暂停并回到需求准备，再修改规模')
-                if payload.get('tier') not in BUDGETS:
-                    raise ValueError('研究规模选项无效')
-                paper['budgetTier'] = payload['tier']
-                paper['revision'] += 1
-                self._save(record)
-                return self.detail(task_id)
-            if action.startswith('paper/sections/'):
-                section_id = action.split('/')[-1]
-                edit_section(paper, section_id, payload)
-                if app:
-                    app.engine.command('paper-context', {'paperContext': self._paper_context(record)})
-                self._save(record)
-                return self.detail(task_id)
-            if action == 'paper/topic':
-                if record['phase'] not in ('empty', 'requirements') or record['document']['polishing'] or self._configuring:
-                    raise ValueError('请先等待需求整理结束；研究中的方向调整请使用节点干预')
-                if payload.get('expectedRevision') != paper['revision']:
-                    raise ValueError('选题版本已变化，请重新查看')
-                topic = next((t for t in paper['topics'] if t['id'] == payload.get('topicId')), None)
-                if not topic:
-                    raise ValueError('选题候选不存在')
-                note = payload.get('note', '')
-                if not isinstance(note, str) or len(note) > 5000:
-                    raise ValueError('补充说明不能超过 5000 字符')
-                paper['selectedTopicId'] = topic['id']
-                paper['revision'] += 1
-                paper['approvedRevision'] = None
-                paper['decisions'].append({'id': identity(), 'kind': 'topic', 'title': '选定研究课题',
-                    'answer': topic['title'] + ('；' + note if note else ''), 'at': utc_now(), 'actor': 'user',
-                    'effect': '研究问题、初始假设和首个实验写入需求，后续节点据此工作。'})
-                text = '我选择的论文课题：' + topic['title'] + '\n研究问题：' + topic['question'] + '\n待验证假设：' + topic['hypothesis'] + '\n首个实验：' + topic['firstExperiment'] + '\n我的补充：' + note
-                return self._edit(task_id, {'text': text}, False)
-            if action == 'paper/decision':
-                if record['phase'] in ('empty', 'requirements', 'retrieving'):
-                    raise ValueError('请先开始当前研究')
-                if not app:
-                    raise ValueError('请重新读取研究状态')
-                before = app.engine.snapshot()
-                question = before['project'].get('researchDecision')
-                state = app.engine.command('research-choice', payload)
-                choice = state['project']['researchChoices'][-1]
-                paper['decisions'].append({'id': choice['id'], 'kind': 'research', 'title': question['question'],
-                    'answer': choice['answer'], 'at': choice['at'], 'actor': 'user', 'nodeId': choice['nodeId'],
-                    'effect': f'已更新 {len(choice["affectedIds"])} 个相关节点的研究输入，重新验证受影响的结果。'})
-                paper['revision'] += 1
-                paper['approvedRevision'] = None
-                record['phase'], record['error'] = 'researching', None
-                self._message(record, 'user', '我的研究决定：' + choice['answer'], 'decision')
-                self._message(record, 'assistant', '你的选择已经进入研究输入。受影响分支会依据这个决定重新验证，论文保留已有内容并标注失效来源。', 'progress')
-                self._save(record)
-                return self.detail(task_id)
-            if action == 'paper/approve':
-                state = app.snapshot() if app else self.detail(task_id)['state']
-                sync_paper(paper, state)
-                if payload.get('expectedRevision') != paper['revision']:
-                    raise ValueError('论文版本已变化，请重新审阅')
-                if not any(s['markdown'].strip() for s in paper['sections']):
-                    raise ValueError('论文还没有正文可确认')
-                if state and state['project'].get('researchDecision'):
-                    raise ValueError('请先处理当前研究决策')
-                if paper_view(paper, state)['issues'] and payload.get('acknowledgeIssues') is not True:
-                    raise ValueError('当前草稿仍有未决问题，请查看后确认')
-                paper['sourceSignature'] = source_signature(paper, state)
-                paper['approvedRevision'] = paper['revision']
-                paper['decisions'].append({'id': identity(), 'kind': 'approval', 'title': '确认了当前论文草稿',
-                    'answer': '已审阅 v' + str(paper['revision']), 'at': utc_now(), 'actor': 'user',
-                    'effect': '确认此版本可作为交付草稿；不代表实验或创新性自动成立。'})
-                self._save(record)
-                return self.detail(task_id)
-            raise ValueError('未知论文操作')
 
     def post(self, path, payload):
         # Long retrieval runs outside this transaction; its eventual engine commit
@@ -508,8 +403,6 @@ class WorkspaceApplication:
             self._record(task_id)
         if action in ('messages', 'document'):
             return self._edit(task_id, payload, action == 'document')
-        if action.startswith('paper/'):
-            return self._paper_post(task_id, action, payload)
         if action == 'start':
             with self._lock:
                 record = self._record(task_id)
@@ -521,8 +414,6 @@ class WorkspaceApplication:
                     raise ValueError('请先完成需求文档整理，再开始研究')
                 if record['phase'] in ('retrieving', 'researching'):
                     raise ValueError('本任务已经在研究中')
-                if record['paper']['topics'] and not record['paper']['selectedTopicId']:
-                    raise ValueError('请选择一个论文选题，再开始研究')
                 record['token'] += 1
                 record['phase'], record['error'] = 'retrieving', None
                 self._message(record, 'user', '按当前需求开始研究。')
@@ -553,13 +444,6 @@ class WorkspaceApplication:
                         self._message(record, 'assistant', '已停止后续研究调度。进行中的论文请求结束后只保留资料。', 'progress')
                     elif operation != 'pause':
                         record['phase'], record['error'] = 'researching', None
-                    if operation in ('intervene', 'deepen'):
-                        record['paper']['decisions'].append({'id': identity(), 'kind': 'intervention',
-                            'title': '你调整了研究任务', 'answer': payload.get('text', payload.get('query', '')),
-                            'at': utc_now(), 'actor': 'user', 'nodeId': payload.get('nodeId'),
-                            'effect': '受影响节点已重新调度；原输出保留在历史记录中。'})
-                        record['paper']['revision'] += 1
-                        record['paper']['approvedRevision'] = None
                     self._save(record)
                     return self.detail(task_id)
         raise ValueError('未知科研任务操作')
@@ -582,69 +466,6 @@ class WorkspaceApplication:
             return 200, detail, 'application/json', None
         if action == 'document':
             return 200, detail['document']['markdown'].encode('utf-8'), 'text/markdown; charset=utf-8', {'Content-Disposition': 'attachment; filename="requirements.md"'}
-        if action == 'paper/terminal':
-            from urllib.parse import parse_qs
-            execution_id = parse_qs(query).get('execution', [''])[0]
-            entry = next((e for e in (detail['state'] or {}).get('history', [])
-                          if e.get('type') in ('tool-executed', 'tool-started') and e.get('id') == execution_id), None)
-            if not entry:
-                raise ValueError('执行记录不存在')
-            root = (self._data_root / task_id / 'runtime').resolve()
-            result = {}
-            for channel in ('stdout', 'stderr'):
-                relative = entry['execution'].get(channel + 'Path')
-                path = (root / str(relative or '')).resolve()
-                if relative and path.is_relative_to(root / 'runs') and path.is_file():
-                    with path.open('rb') as handle:
-                        raw = handle.read(120001)
-                    result[channel] = raw[:120000].decode('utf-8', errors='replace') + ('\n[输出已截断，请下载完整日志]' if len(raw) > 120000 else '')
-                else:
-                    result[channel] = ''
-            return 200, result, 'application/json', None
-        if action == 'paper/preview':
-            from urllib.parse import parse_qs
-            from .artifact_views import preview_artifact
-            relative = parse_qs(query).get('path', [''])[0]
-            root = self._data_root / task_id / 'runtime'
-            registered = {a['url'].split('/artifacts/', 1)[1] for a in detail['artifacts'] if '/artifacts/' in a['url']}
-            return 200, preview_artifact(root, relative, registered), 'application/json', None
-        if action == 'paper/live-chart':
-            from urllib.parse import parse_qs
-            from .artifact_views import live_dashboard
-            execution_id = parse_qs(query).get('execution', [''])[0]
-            state = detail['state'] or {}
-            entry = next((e for e in state.get('history', []) if e.get('type') == 'tool-started' and e.get('id') == execution_id), None)
-            if not entry:
-                raise ValueError('执行记录不存在')
-            execution = entry['execution']
-            node = next((n for n in state.get('nodes', []) if n['id'] == execution.get('nodeId')), {})
-            finished = any(e.get('type') == 'tool-executed' and e.get('execution', {}).get('stdoutPath') == execution.get('stdoutPath')
-                           for e in state.get('history', []))
-            current = (not finished and node.get('active') and node.get('status') == 'running' and node.get('version') == execution.get('nodeVersion')
-                       and state.get('project', {}).get('round') == execution.get('round'))
-            if not current:
-                return 200, {'pending': True}, 'application/json', None
-            return 200, live_dashboard(self._data_root / task_id / 'runtime', execution), 'application/json', None
-        if action in ('paper/manuscript', 'paper/export'):
-            with self._lock:
-                paper = copy.deepcopy(self._record(task_id)['paper'])
-            files = export_paper(paper, detail['state'], detail['task']['title'])
-            if action == 'paper/manuscript':
-                return 200, files['paper/manuscript.md'].encode('utf-8'), 'text/markdown; charset=utf-8', {'Content-Disposition': 'attachment; filename="manuscript.md"'}
-            state = detail['state']
-            if state:
-                app = self._apps.get(task_id)
-                if app:
-                    state['executionHistory'] = app.engine.export_audit()
-                stream = io.BytesIO(export_bundle(state, self._data_root / task_id / 'runtime', allow_draft=True))
-            else:
-                stream = io.BytesIO()
-            with zipfile.ZipFile(stream, 'a', zipfile.ZIP_DEFLATED) as archive:
-                for name, text in files.items():
-                    archive.writestr(name, text.encode('utf-8'))
-                archive.writestr('requirements.md', detail['document']['markdown'].encode('utf-8'))
-                archive.writestr('conversation.json', json.dumps(detail['messages'], ensure_ascii=False, indent=2).encode('utf-8'))
-            return 200, stream.getvalue(), 'application/zip', {'Content-Disposition': 'attachment; filename="paper-research.zip"'}
         if action.startswith('artifacts/'):
             root = (self._data_root / task_id / 'runtime').resolve()
             path = (root / action[len('artifacts/'):]).resolve()
@@ -669,8 +490,6 @@ class WorkspaceApplication:
             data = export_bundle(state, self._data_root / task_id / 'runtime')
             stream = io.BytesIO(data)
             with zipfile.ZipFile(stream, 'a', zipfile.ZIP_DEFLATED) as archive:
-                for name, text in export_paper(self._record(task_id)['paper'], state, detail['task']['title']).items():
-                    archive.writestr(name, text.encode('utf-8'))
                 archive.writestr('requirements.md', detail['document']['markdown'].encode('utf-8'))
                 archive.writestr('conversation.json', json.dumps(detail['messages'], ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('requirement-history.json', json.dumps(self._record(task_id)['documentHistory'], ensure_ascii=False, indent=2).encode('utf-8'))

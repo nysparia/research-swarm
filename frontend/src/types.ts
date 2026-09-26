@@ -1,4 +1,3 @@
-import type { ResearchCycleState } from './researchCycleTypes';
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'waiting_user';
 export type Feedback = 'interested' | 'not_interested' | 'read_later' | null;
 export type Page = 'workbench' | 'requirements' | 'swarm' | 'papers' | 'recommendations' | 'report';
@@ -104,13 +103,13 @@ export interface Checkpoint {
 }
 export interface Snapshot {
   revision: number;
-  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; researchCycle?: ResearchCycleState };
+  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm' };
   stage: number;
   paused: boolean;
   status: 'idle' | 'running' | 'waiting_user' | 'failed' | 'completed';
   requirements: Requirement[];
   nodes: ResearchNode[];
-  edges: { source: string; target: string; type: 'decompose' | 'return' | 'compare' | 'dependency'; reason: string }[];
+  edges: { source: string; target: string; type: 'decompose' | 'return' | 'compare'; reason: string }[];
   papers: Paper[];
   facetNodes: FacetNode[];
   evidence: Evidence[];
