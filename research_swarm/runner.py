@@ -251,7 +251,7 @@ class ResearchRunner:
             elif result.get('limitations'):
                 log(f'论文 #{paper_id} 全文读取受限：' + '；'.join(result['limitations']))
             return result
-        if self.read_pdf and node.get('phase') == 'execute':
+        if self.read_pdf and node.get('phase') == 'execute' and (not context.get('researchCycle') or node['input'].get('researchStep') in ('literature', 'data_source')):
             for paper in sorted(papers, key=lambda p: bool(p.get('pdfAvailable')), reverse=True)[:2]:
                 read_material(paper['id'])
         pids = {p['id'] for p in papers}
@@ -288,6 +288,25 @@ class ResearchRunner:
             system += WORKER_PROMPT
             inputs['paperContext'] = context.get('paperContext', {})
             inputs['researchChoices'] = context.get('researchChoices', [])
+        research_step = node.get('input', {}).get('researchStep') if context.get('researchCycle') else None
+        if research_step:
+            from .research_cycle_prompts import prompt_for
+            system += prompt_for(research_step, node['phase'])
+            inputs['researchCycle'] = context['researchCycle']
+            inputs['upstreamResults'] = [{k: n.get(k) for k in ('id', 'title', 'output')} for n in context.get('upstreamResults', [])]
+            if research_step == 'experiment_design' and node['phase'] == 'aggregate' and self.local_tools and context.get('children'):
+                latest = context['children'][-1]
+                run = (latest.get('output') or {}).get('structured', {}).get('experimentRun', {})
+                materials = []
+                for key in ('script', 'metricsArtifact', 'rawDataArtifact'):
+                    if not run.get(key): continue
+                    try:
+                        read = self.local_tools.call('artifact_read', {'path': run[key], 'preview': True}, node, context, log)
+                        materials.append({**read, 'text': read['text'][:48000]})
+                        log('设计节点读取当前实验材料：' + read['path'])
+                    except (OSError, ValueError) as exc:
+                        materials.append({'path': run[key], 'error': str(exc)})
+                inputs['experimentReviewMaterials'] = materials
         messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': json.dumps(inputs, ensure_ascii=False)}]
         tools = ResearchTools(library, read_material if self.read_pdf else None)
         validation_retries, tool_rounds = 0, 0
@@ -308,6 +327,11 @@ class ResearchRunner:
                     raise ValueError('toolCalls 必须为含 name 和 arguments 对象的列表')
                 if not calls:
                     final = validate_result(result, library)
+                    if research_step:
+                        from .research_cycle import validate_output
+                        validate_output(research_step, node['phase'], final['structured'], {e['id'] for e in library.get('evidence', [])}, node['input'].get('hypothesisId'))
+                        if any(not c['evidenceIds'] for c in final['claims']):
+                            raise ValueError('研究判断必须有来源；猜想放 hypotheses，缺口放 unresolved')
                     if any(c.get('sourceNodeId') == node.get('sourceNodeId') and c.get('sourceNodeId') is not None for c in final.get('children', [])):
                         raise ValueError('不能将需求派回同一切面节点；子任务请省略 sourceNodeId 或选择其下级切面')
             except ValueError as exc:
@@ -315,7 +339,9 @@ class ResearchRunner:
                     raise
                 validation_retries += 1
                 log('节点输出未通过证据/结构校验，正在纠正 1/1：' + str(exc)[:600])
-                messages.extend([{'role': 'assistant', 'content': raw}, {'role': 'user', 'content': '输出校验失败：' + str(exc)[:600] + '。只可使用提供的实际 ID；无法支持的判断使用 evidenceIds=[] 并说明局限；没有对应切面的子任务省略 sourceNodeId。请返回纠正后的完整 JSON，不能捏造新的引用。'}])
+                repair = ('未验证的想法放在阶段猜想字段或 unresolved，不得放入 claims；完成当前阶段结构，不要创建 children/followups。'
+                          if research_step else '无法支持的判断使用 evidenceIds=[] 并说明局限；没有对应切面的子任务省略 sourceNodeId。')
+                messages.extend([{'role': 'assistant', 'content': raw}, {'role': 'user', 'content': '输出校验失败：' + str(exc)[:600] + '。只可使用提供的实际 ID；' + repair + '请返回纠正后的完整 JSON，不能捏造新的引用。'}])
                 continue
             if not calls:
                 waiting_decision = bool(context.get('paperResearch') and final['structured'].get('researchDecision'))
@@ -373,6 +399,10 @@ class ResearchRunner:
             observations = []
             for call in calls:
                 name = call.get('name', '')
+                if research_step and ((name in ('python_run', 'python_install') and research_step != 'experiment_execution') or
+                             (research_step == 'experiment_execution' and name == 'paper_retrieve')):
+                    observations.append({'name': name, 'result': {'error': '本节点负责当前阶段。实验协议变更请上报设计节点；执行工具只交给实验执行节点。'}})
+                    continue
                 log('调用科研资料工具：' + name)
                 if self.local_tools and name in self.local_tools.names:
                     try:
@@ -383,7 +413,7 @@ class ResearchRunner:
                         generated.append(e)
                         library.setdefault('evidence',[]).append(e)
                     if 'evidence' in result:
-                        executions.append({k:result.get(k) for k in ('tool','status','returnCode','elapsedMs','artifacts','script','stdoutPath','stderrPath')})
+                        executions.append({k:result.get(k) for k in ('tool','status','returnCode','elapsedMs','artifacts','script','scriptSha256','scriptChanged','stdoutPath','stderrPath')})
                 elif name == 'paper_retrieve':
                     if not allow_search:
                         raise ValueError('该节点尚未获得补充外部检索授权')

@@ -237,7 +237,7 @@ class WorkspaceApplication:
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
                 'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': 'model', 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:4]], 'topics': validate_topics(result.get('topics', []))}
+                'queries': [q.strip()[:1000] for q in queries[:4]], 'topics': []}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
@@ -299,7 +299,8 @@ class WorkspaceApplication:
                 metadata = (record['title'], record['document']['markdown'], record['imported'])
             from .sources import prepare_source
             prepare_source(self.source, self._data_root / task_id / 'source', task_id, metadata[0], metadata[1], import_existing=metadata[2])
-            if not imported:
+            model_cycle = self.settings.public()['capabilities']['modelReady']
+            if not imported and not model_cycle:
                 for query in compiled['queries']:
                     with self._lock:
                         record = self._record(task_id)
@@ -322,7 +323,7 @@ class WorkspaceApplication:
                         app.engine.command('next-round', {})
                     mode = 'llm' if self.settings.public()['capabilities']['modelReady'] else 'evidence'
                     state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'],
-                        'paperResearch': True, 'paperContext': self._paper_context(record), 'budgetTier': record['paper'].get('budgetTier', 'swarm')})
+                        'paperResearch': True, 'researchCycle': mode == 'llm', 'paperContext': self._paper_context(record), 'budgetTier': record['paper'].get('budgetTier', 'swarm')})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']

@@ -12,6 +12,7 @@ import type { ResearchArtifact, TaskDetail } from './taskTypes';
 import type { VisualNode } from './graphData';
 import type { ResearchNode } from './types';
 import './desk.css';
+import { ResearchCycleLedger } from './ResearchCycleLedger';
 
 const panels = [
   { id: 'graph', name: '蜂群结构', icon: <ApartmentOutlined /> }, { id: 'chart', name: '实验图表', icon: <LineChartOutlined /> },
@@ -103,6 +104,8 @@ export function ResearchDesk({ detail, onNode, onEdit, onView }: {
     else setGalleryFile(artifact);
   };
   const paneBody = (id: string) => {
+    const cycle = detail.state?.project.researchCycle;
+    if (cycle && ['hypotheses', 'data', 'experiments'].includes(id)) return <ResearchCycleLedger cycle={cycle} mode={id === 'data' ? 'data' : id === 'experiments' ? 'experiments' : 'hypotheses'} onNode={nodeId => { const node = allNodes.find(n => n.id === nodeId); if (node) onNode({ id: node.id, nodeId: node.id, title: node.title, status: node.status, active: node.active, action: node.logs.at(-1)?.message || '', sourceKind: 'agent' }); }} />;
     if (id === 'assets') return <section className="desk-assets"><header><FolderOpenOutlined /><strong>产物架</strong><span>{focusId ? '当前节点' : '全部实验'} · {files.filter(file => !/stdout|stderr|receipt/.test(file.name)).length} 份文件</span><Button type="text" size="small" onClick={() => onView('experiments')}>实验协议与结果</Button></header><div>{files.filter(file => !/stdout|stderr|receipt/.test(file.name)).slice(0, 24).map(file => <button className={file.path === selectedChart?.path || file.path === selectedCode?.path ? 'linked' : ''} key={file.url} onClick={() => openArtifact(file)}><span>{file.name.split('.').at(-1)?.toUpperCase()}</span><strong>{file.name}</strong><small>{artifactCurrent(file, detail) ? '本轮产物' : '历史产物'}</small></button>)}{!files.length && <p>模型、图表、代码和原始数据生成后，会自动归入这个实验。</p>}</div></section>;
     if (id === 'graph') return <Suspense fallback={<div className="desk-empty"><Spin /><p>加载研究结构</p></div>}><ResearchGraph state={detail.state} retrieving={detail.phase === 'retrieving'} onSelect={selectFromGraph} /></Suspense>;
     if (!['code', 'chart', 'paper'].includes(id)) return <ResearchBoard kind={id} detail={detail} onFocus={focus} onView={onView} />;

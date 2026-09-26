@@ -73,6 +73,31 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['claims'][0]['status'], 'candidate')
         self.assertIn('无证据', result['claims'][0]['limitations'])
 
+    def test_research_stage_remains_validated_after_a_tool_round(self):
+        import json
+        class Provider:
+            replies = [json.dumps({'toolCalls': [{'name': 'paper_search', 'arguments': {'query': 'attention'}}]}),
+                       json.dumps({'summary': '研究现状', 'structured': {'literatureReview': {'summary': '有摘要', 'evidenceIds': ['10']}}, 'evidenceIds': ['10']})]
+            def chat(self, messages, **kwargs): return self.replies.pop(0)
+        result = ResearchRunner(Provider(), Path(self.temp.name))(
+            {'id': 'literature', 'phase': 'execute', 'input': {'researchStep': 'literature'}},
+            dict(self.context, mode='llm', researchCycle={'status': 'running'}), lambda _: None)
+        self.assertEqual(result['structured']['literatureReview']['evidenceIds'], ['10'])
+
+    def test_thinking_stage_cannot_execute_local_code(self):
+        import json
+        class Provider:
+            replies = [json.dumps({'toolCalls': [{'name': 'python_run', 'arguments': {'code': 'print(1)'}}]}),
+                       json.dumps({'summary': '背景', 'structured': {'background': {'context': '计算机研究', 'boundaries': 'CPU'}}})]
+            def chat(self, messages, **kwargs): return self.replies.pop(0)
+        class Local:
+            names = ('python_run',)
+            def call(self, *args): raise AssertionError('thinking stage executed code')
+        result = ResearchRunner(Provider(), Path(self.temp.name), local_tools=Local())(
+            {'id': 'background', 'phase': 'execute', 'input': {'researchStep': 'background'}},
+            dict(self.context, mode='llm', researchCycle={'status': 'running'}), lambda _: None)
+        self.assertIn('background', result['structured'])
+
     def test_audit_decomposes_then_grounds_leaf_without_model(self):
         root = self.runner({'id': 'central', 'phase': 'plan', 'kind': 'research', 'input': {}}, self.context, lambda _: None)
         self.assertGreaterEqual(len(root['children']), 2)

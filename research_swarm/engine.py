@@ -54,6 +54,8 @@ class Engine:
         self._closing = False
         self._manual_paused = False
         self._runner = runner
+        self._artifact_root = Path(store_path).resolve().parent
+        self._cycle_now = _now
         self._store = Store(store_path)
         self._library = copy.deepcopy(library)
         self._executions = {}
@@ -445,6 +447,11 @@ class Engine:
         self._history("autonomous-start", requirements=copy.deepcopy(requirements),
                       mode=mode, searchBudgetId=root["input"].get("searchBudgetId"))
         self._activity("user", "已开始自主研究：将自动分解、执行、补充研究并整理候选报告。")
+        if payload.get('researchCycle'):
+            from .research_cycle import start
+            start(self)
+        else:
+            self._state['project'].pop('researchCycle', None)
 
     def _pending_checkpoint(self):
         current_id = self._state["activeCheckpointId"]
@@ -565,8 +572,14 @@ class Engine:
         answer = option['label'] + '：' + option['effect'] + ('\n' + note.strip() if note.strip() else '')
         node = self._get_node(question['nodeId'])
         affected = self._affected(node['id'], 'modify')
-        self._intervene({'nodeId': node['id'], 'kind': 'modify', 'expectedRevision': payload.get('expectedRevision'),
-                         'text': node['input'].get('description', node['title']) + '\n用户已决定：' + answer})
+        if node['input'].get('researchStep') == 'topic' and self._state['project'].get('researchCycle'):
+            if payload.get('expectedRevision') != self._state['revision']:
+                raise ValueError('状态版本已变化，请重新查看影响预览后提交')
+            self._state['project']['researchCycle']['topic']['userChoice'] = answer
+            self._activity('user', '已确定课题研究重点：' + answer, node)
+        else:
+            self._intervene({'nodeId': node['id'], 'kind': 'modify', 'expectedRevision': payload.get('expectedRevision'),
+                             'text': node['input'].get('description', node['title']) + '\n用户已决定：' + answer})
         choice = {**copy.deepcopy(question), 'answer': answer, 'at': _now(), 'actor': 'user', 'affectedIds': affected}
         self._state['project'].setdefault('researchChoices', []).append(choice)
         self._state['project']['researchDecision'] = None
@@ -579,6 +592,8 @@ class Engine:
         return kind
 
     def _affected(self, node_id, kind="modify"):
+        if self._state['project'].get('researchCycle') and kind in ('insert', 'deepen'):
+            return ['central']
         affected = {node_id}
         if kind in ("modify", "reject"):
             queue = [node_id]
@@ -588,6 +603,9 @@ class Engine:
                     if child["id"] not in affected:
                         affected.add(child["id"])
                         queue.append(child["id"])
+                for consumer in self._state['nodes']:
+                    if parent in consumer['input'].get('dependsOn', []) and consumer['id'] not in affected:
+                        affected.add(consumer['id']); queue.append(consumer['id'])
         # Never traverse down again after adding an aggregation consumer: siblings stay valid.
         queue = list(affected)
         while queue:
@@ -622,9 +640,16 @@ class Engine:
                 return agent["id"]
         return "central"
 
-    def _invalidate(self, node_ids, cause):
+    def _invalidate(self, node_ids, cause, *, supersede_decision=False):
+        decision = self._state['project'].get('researchDecision')
+        if supersede_decision and decision and decision.get('nodeId') in node_ids:
+            self._history('research-decision-superseded', decision=copy.deepcopy(decision), reason=cause)
+            self._state['project']['researchDecision'] = None
+        from .research_cycle import invalidate
+        invalidate(self, set(node_ids))
         for node_id in node_ids:
             node = self._get_node(node_id)
+            if node['input'].get('superseded'): continue
             node["version"] += 1
             node["status"] = "pending"
             node["progress"] = 0
@@ -670,6 +695,15 @@ class Engine:
         keep_gate = bool(initial_gate and initial_gate["type"] in ("requirements", "recommendations"))
         was_paused = self._manual_paused
         self._clear_report_gate()
+        if self._state['project'].get('researchCycle') and kind in ('insert', 'deepen'):
+            from .research_cycle import insert
+            origin = copy.deepcopy(node)
+            self._invalidate(['central'], text, supersede_decision=True)
+            insert(self, origin, dict(payload, text=text))
+            self._state.update(stage=6, paused=was_paused)
+            self._history('intervention', nodeId=node['id'], kind=kind, text=text, affectedIds=['central'])
+            self._activity('user', '已追加研究方向：' + text, node)
+            return
         if self._autonomous():
             self._state["project"]["researchIteration"] = 1 if self._state["project"].get("researchStarted") else 0
         if not node["active"]:
@@ -678,7 +712,7 @@ class Engine:
             node["parentId"] = parent_id if node["id"] != "central" else None
             if node["id"] != "central":
                 self._link(parent_id, node["id"])
-        self._invalidate(affected, text)
+        self._invalidate(affected, text, supersede_decision=True)
         if kind == "modify":
             node["input"]["description"] = text
             if "acceptance" in payload:
@@ -744,6 +778,8 @@ class Engine:
         if not keep_gate:
             self._state["stage"] = 6
             self._state["paused"] = was_paused or (self._autonomous() and not self._state["project"].get("researchStarted"))
+        from .research_cycle import rebuild
+        rebuild(self, node, kind, text, full_reset=updated_requirements is not None)
         self._history("intervention", nodeId=node["id"], kind=kind, text=text, affectedIds=affected)
         self._activity("user", "已提交研究干预：" + text, node)
 
@@ -895,6 +931,10 @@ class Engine:
             for item in incoming:
                 value = copy.deepcopy(item)
                 value["id"] = str(value["id"])
+                if key == 'evidence':
+                    value.pop('researchValidation', None)
+                    if value['id'] in existing and existing[value['id']].get('extractor') == 'local_process':
+                        continue
                 if key == "papers" and value["id"] in existing:
                     value["feedback"] = existing[value["id"]].get("feedback")
                     value["workerStatus"] = existing[value["id"]].get("workerStatus", "pending")
@@ -1012,6 +1052,9 @@ class Engine:
         for node in self._state["nodes"]:
             if not node["active"] or node["status"] != "pending":
                 continue
+            dependencies = node['input'].get('dependsOn', [])
+            if any(self._get_node(i)['status'] != 'completed' for i in dependencies):
+                continue
             remaining_depth = max(0, self._limit('maxDepth') - self._depth(node))
             remaining_tasks = max(0, self._limit('maxTasks') - sum(n['active'] for n in self._state['nodes']))
             children = self._children(node["id"])
@@ -1066,9 +1109,13 @@ class Engine:
             context['paperResearch'] = self._state['project'].get('paperResearch', False)
             context['paperContext'] = copy.deepcopy(self._state['project'].get('paperContext', {}))
             context['researchChoices'] = copy.deepcopy(self._state['project'].get('researchChoices', []))
+            context['researchCycle'] = copy.deepcopy(self._state['project'].get('researchCycle'))
+            context['upstreamResults'] = [copy.deepcopy(self._get_node(i)) for i in dependencies]
+            if self._state['project'].get('researchCycle'):
+                self._state['project']['researchCycle']['stage'] = node['input'].get('researchStep', 'synthesis')
             token["input"] = copy.deepcopy(node["input"])
             token["context"] = {key: copy.deepcopy(context[key])
-                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth", "remainingTasks", "paperResearch", "paperContext", "researchChoices")}
+                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth", "remainingTasks", "paperResearch", "paperContext", "researchChoices", "researchCycle", "upstreamResults")}
             return copy.deepcopy(node), context, token
         return None
 
@@ -1092,7 +1139,7 @@ class Engine:
                 return
             current = self._current(token)
             execution = {key: copy.deepcopy(result.get(key)) for key in
-                         ('tool', 'status', 'returnCode', 'elapsedMs', 'artifacts', 'script',
+                         ('tool', 'status', 'returnCode', 'elapsedMs', 'artifacts', 'script', 'scriptSha256', 'scriptChanged',
                           'stdoutPath', 'stderrPath', 'nodeId', 'nodeVersion', 'round', 'createdAt')}
             evidence = copy.deepcopy(result.get('evidence', []))
             execution['receipt'] = evidence[0]['locator'] if evidence else None
@@ -1105,6 +1152,15 @@ class Engine:
             if valid:
                 known = {item['id'] for item in self._state['evidence']}
                 self._state['evidence'].extend(item for item in evidence if item['id'] not in known)
+            self._commit()
+
+    def _record_artifact_read(self, token, result):
+        with self._condition:
+            if not self._current(token): return
+            entry = {k: result[k] for k in ('path', 'sha256')}
+            token.setdefault('artifactReads', []).append(entry)
+            self._history('experiment-artifact-reviewed', nodeId=token['nodeId'], version=token['version'],
+                          executionToken=token['id'], artifact=entry)
             self._commit()
 
     def _record_execution_started(self, token, execution):
@@ -1171,6 +1227,7 @@ class Engine:
                 context['cancelled'] = lambda token=token: not self._current(token)
                 context['executionToken'] = token['id']
                 context['record_execution'] = lambda result, token=token: self._record_execution(token, result)
+                context['record_artifact_read'] = lambda result, token=token: self._record_artifact_read(token, result)
                 context['record_execution_started'] = lambda result, token=token: self._record_execution_started(token, result)
                 context['local_activity'] = lambda active, token=token: self._local_activity(token, active)
                 output = self._runner(node, context, log)
@@ -1205,6 +1262,8 @@ class Engine:
                                       input=token.get("input", {}), context=token.get("context", {}), error=str(error),
                                       executionToken=token['id'], executions=copy.deepcopy(token.get('toolExecutions', [])),
                                       phase=token['phase'], errorType=type(error).__name__, trace=traceback.format_exc()[-6000:])
+                        from .research_cycle import report_failure
+                        report_failure(self, current, token, error)
                         self._commit()
                         self._condition.notify_all()
 
@@ -1302,6 +1361,19 @@ class Engine:
                     raise ValueError("只有中央代理汇总完成后可以提出后续研究任务")
                 self._validate_children(node, result["followups"])
         json.dumps(result, allow_nan=False)
+        if self._state['project'].get('researchCycle') and node['input'].get('researchStep'):
+            from .research_cycle import validate_output
+            validate_output(node['input']['researchStep'], node['phase'], result['structured'], known, node['input'].get('hypothesisId'))
+            if any(not c['evidenceIds'] for c in result['claims']):
+                raise ValueError('研究论断必须带来源；未验证的想法放在猜想或未决项中')
+            if result.get('children') or result.get('followups'):
+                raise ValueError('研究阶段任务由证据循环调度，不得跳过数据索求或实验复核环节')
+            if node['input']['researchStep'] == 'topic' and self._state['project'].get('paperResearch') and not result['structured'].get('researchDecision'):
+                topic = result['structured']['researchTopic']
+                result['structured']['researchDecision'] = {'question': '课题「' + topic['title'] + '」先侧重哪一点？',
+                    'rationale': topic['rationale'], 'options': [
+                        {'label': '先验证现有方案与边界', 'effect': '围绕现有方法、强基线和适用条件提出可证伪猜想。'},
+                        {'label': '优先探索新的方法机制', 'effect': '围绕研究缺口提出候选新机制，与现有方法进行可证伪比较。'}]}
         return result
 
     def _accept(self, token, output):
@@ -1339,6 +1411,11 @@ class Engine:
             self._state['paused'] = True
             self._manual_paused = True
             self._activity('AI', '请你决定研究方向：' + decision['question'], node)
+        from .research_cycle import accept
+        if accept(self, node, output, token):
+            node['evidenceIds'] = list(output['evidenceIds'])
+            self._new_outputs[-1]['output'] = copy.deepcopy(output)
+            return
         if node["phase"] == "plan":
             children = output.get("children", [])
             node["input"]["planningOutput"] = copy.deepcopy(output)

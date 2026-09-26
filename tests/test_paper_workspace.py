@@ -121,11 +121,12 @@ class DecisionGateTests(unittest.TestCase):
                 with engine._lock:
                     node = engine._state['nodes'][0]
                     node.update(active=True, status='failed')
-                    engine._state['project'].update(researchStarted=True, researchDecision={'id': 'decision-1'})
+                    engine._state['project'].update(researchStarted=True, researchDecision={'id': 'decision-1', 'nodeId': node['id']})
                     engine._state['paused'] = True
                     engine._manual_paused = True
                     engine._retry({'nodeId': node['id']})
                     self.assertTrue(engine._state['paused'])
+                    self.assertEqual(engine._state['project']['researchDecision']['id'], 'decision-1')
                     engine._state['paused'] = False  # The scheduler must independently enforce the gate.
                     self.assertIsNone(engine._next_job())
             finally:

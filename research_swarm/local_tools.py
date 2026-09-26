@@ -6,6 +6,8 @@ receipts. This is process isolation, not an OS security sandbox.
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -121,6 +123,8 @@ class LocalResearchTools:
             result = self._call(name, arguments, node, context, log)
             if result.get('evidence') and context.get('record_execution'):
                 context['record_execution'](result)
+            if name == 'artifact_read' and context.get('record_artifact_read'):
+                context['record_artifact_read'](result)
             return result
         finally:
             activity(False)
@@ -132,8 +136,37 @@ class LocalResearchTools:
             path=(self.root/str(arguments.get('path',''))).resolve()
             if not path.is_relative_to(self.root/'runs') or not path.is_file() or path.is_symlink():
                 raise ValueError('只能读取本课题 runs 内的实验产物')
-            if path.stat().st_size>256*1024: raise ValueError('文本产物超过 256 KiB，请使用指标摘要')
-            return {'path':path.relative_to(self.root).as_posix(),'text':path.read_text('utf-8')}
+            large = path.stat().st_size > 256*1024
+            if large and (not arguments.get('preview') or path.suffix not in ('.csv', '.json') or path.stat().st_size > 4*1024*1024):
+                raise ValueError('文本产物超过 256 KiB；CSV/JSON 可用 preview=true 读取校验摘要，最多 4 MiB')
+            content = path.read_bytes()
+            text = content.decode('utf-8-sig')
+            result = {'path':path.relative_to(self.root).as_posix(),'text':text, 'sha256':hashlib.sha256(content).hexdigest(), 'bytes':len(content)}
+            if large and path.suffix == '.csv':
+                reader = csv.DictReader(io.StringIO(text)); rows = list(reader)
+                result.update(preview=True, rowCount=len(rows), columns=reader.fieldnames,
+                              text='\n'.join(text.splitlines()[:21]) + '\n[仅首20条观察；全文哈希及行数已核验]')
+            elif large:
+                data = json.loads(text)
+                remaining = [300]
+                def summarize(value, depth=0):
+                    remaining[0] -= 1
+                    if remaining[0] <= 0 or depth >= 5:
+                        return {'previewType': type(value).__name__, 'omitted': True}
+                    if isinstance(value, list):
+                        return {'previewType': 'array', 'length': len(value), 'firstItems': [summarize(v, depth+1) for v in value[:10]]}
+                    if isinstance(value, dict):
+                        fields = dict(list(value.items())[:30])
+                        summary = {k: summarize(v, depth+1) for k, v in fields.items()}
+                        if len(fields) < len(value): summary['omittedKeys'] = len(value) - len(fields)
+                        return summary
+                    if isinstance(value, str) and len(value) > 1000:
+                        return {'previewType': 'string', 'length': len(value), 'prefix': value[:1000]}
+                    return value
+                result.update(preview=True, fields=list(data)[:100] if isinstance(data, dict) else None,
+                              keyCount=len(data) if isinstance(data, dict) else None,
+                              text=json.dumps(summarize(data), ensure_ascii=False, indent=2)[:48000] + '\n[仅预览；全文哈希及字节数已核验，数组显示长度与前10项]')
+            return result
         packages=[]
         if name=='python_install':
             indexes = {'pypi':'https://pypi.org/simple', 'tuna':'https://pypi.tuna.tsinghua.edu.cn/simple'}
@@ -177,18 +210,20 @@ class LocalResearchTools:
                           '--timeout','30','--retries','1','--index-url',index,*packages]
                 timeout=300
             else:
-                script.write_text(code,encoding='utf-8')
+                script.write_text(code,encoding='utf-8',newline='\n')
                 # -I ignores PYTHONUTF8/PYTHONIOENCODING; make UTF-8 explicit for Chinese process logs.
                 argv=[str(python),'-I','-X','utf8','-u',str(script)]
                 timeout=max(1,min(180,int(arguments.get('timeoutSeconds',90))))
             log('本机执行：'+('安装科研依赖 '+', '.join(packages)+' · 来源 '+source if packages else name)+' · 工作目录 '+cwd.relative_to(self.root).as_posix())
             before = {path: (path.stat().st_size, path.stat().st_mtime_ns)
                       for path in cwd.rglob('*') if path.is_file() and not path.is_symlink()}
+            script_digest = hashlib.sha256(script.read_bytes()).hexdigest() if script.is_file() else None
             if context.get('record_execution_started'):
                 context['record_execution_started']({'tool': name, 'status': 'running', 'nodeId': node['id'],
                     'nodeVersion': node.get('version', 1), 'round': context.get('round', 1), 'createdAt': started,
                     'workingDirectory': cwd.relative_to(self.root).as_posix(),
                     'script': script.relative_to(self.root).as_posix() if script.is_file() else None,
+                    'scriptSha256': script_digest,
                     'stdoutPath': (run / 'stdout.txt').relative_to(self.root).as_posix(),
                     'stderrPath': (run / 'stderr.txt').relative_to(self.root).as_posix(),
                     'dashboardBefore': before.get(cwd / 'research-dashboard.json')})
@@ -212,7 +247,10 @@ class LocalResearchTools:
                           command=argv,workingDirectory=cwd.relative_to(self.root).as_posix(),artifacts=artifacts,
                           stdoutPath=(run/'stdout.txt').relative_to(self.root).as_posix(),
                           stderrPath=(run/'stderr.txt').relative_to(self.root).as_posix())
-            if script.is_file(): result['script']=script.relative_to(self.root).as_posix()
+            if script_digest:
+                result['script']=script.relative_to(self.root).as_posix()
+                result['scriptSha256']=script_digest
+                result['scriptChanged']=not script.is_file() or hashlib.sha256(script.read_bytes()).hexdigest() != script_digest
             receipt=run/'receipt.json'
             temporary=run/'receipt.pending'
             temporary.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')

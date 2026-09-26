@@ -40,3 +40,5 @@
 .workbench-tabs { padding: 7px 14px; }
 @media (min-width: 1800px) { .desk-surfaces .board-wall { grid-template-columns: repeat(4,minmax(210px,1fr)); } }
 @media (max-width: 700px) { .research-main-view.view-desk { min-height: 420px; } .desk-focus-bar { padding-bottom: 10px; } }
+
+.cycle-ledger{font-size:14px;line-height:1.8;padding:6px 0}.cycle-ledger-header{display:flex;flex-wrap:wrap;gap:5px;align-items:center;color:#64748b;font-size:12px;margin-bottom:10px}.cycle-ledger article{padding:15px 0;border-bottom:1px solid #e5eaf1}.cycle-ledger article>div:first-child{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.cycle-ledger article strong{font-size:14px;font-weight:550}.cycle-ledger article p{margin:9px 0;font-size:13px;line-height:1.8}.cycle-ledger article b{font-weight:500}.cycle-topic{font-size:15px;font-weight:550;margin:12px 0}.cycle-ledger .ant-alert{margin:10px 0}.cycle-ledger .ant-btn{white-space:normal;height:auto;line-height:1.8;text-align:left}
