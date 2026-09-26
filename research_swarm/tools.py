@@ -1,4 +1,4 @@
-"""Research-only tool registry. No shell, browser agent, or unrestricted file API."""
+"""Literature tools; local research processes live in local_tools."""
 from __future__ import annotations
 
 import math
@@ -48,8 +48,10 @@ class ResearchTools:
             query = str(arguments.get('query', '')).strip().lower()
             terms = query.split()
             papers = self.library.get('papers', [])
-            ranked = sorted(papers, key=lambda p: sum(t in (p['title'] + ' ' + p.get('abstract', '')).lower() for t in terms), reverse=True)
-            return {'papers': [{k: p.get(k) for k in ('id', 'title', 'abstract', 'evidenceIds', 'score', 'facetNodeIds')} for p in ranked[:min(15, max(1, int(arguments.get('limit', 8))))]], 'scope': '当前真实论文库；外部补充检索由用户在节点深入研究中启动'}
+            def score(p):
+                return sum(t in (p['title'] + ' ' + p.get('abstract', '')).lower() for t in terms)
+            ranked = sorted((p for p in papers if not terms or score(p)>0), key=score, reverse=True)
+            return {'papers': [{k: p.get(k) for k in ('id', 'title', 'abstract', 'evidenceIds', 'score', 'facetNodeIds')} for p in ranked[:min(15, max(1, int(arguments.get('limit', 8))))]], 'scope': '仅检索当前论文库；没有匹配时返回空列表。可使用已授权的 paper_retrieve 补充外部论文。'}
         if name == 'paper_read':
             paper = next((p for p in self.library.get('papers', []) if p['id'] == str(arguments.get('paperId'))), None)
             if paper is None:

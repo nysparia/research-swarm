@@ -1,9 +1,10 @@
 import { lazy, Suspense } from 'react';
-import { Button, Input, Spin, Tabs, type TabsProps } from 'antd';
+import { Alert, Button, Input, Spin, Tabs, type TabsProps } from 'antd';
 import { ArrowUpOutlined, DownloadOutlined, FileTextOutlined } from '@ant-design/icons';
 import { Markdown } from './Markdown';
 import { TaskEvidence } from './TaskOverlays';
 import { BlurText } from './BlurReveal';
+import { failureReason, researchAssessment } from './researchStatus';
 import type { Message, TaskDetail } from './taskTypes';
 import type { VisualNode } from './graphData';
 import type { Snapshot } from './types';
@@ -41,8 +42,9 @@ export function AgentActivity({ detail }: { detail: TaskDetail }) {
   const latest = state?.activities.at(-1);
   const message = operation?.message || central?.logs.at(-1)?.message || latest?.message || (detail.phase === 'retrieving' ? '正在检索研究资料' : '等待研究调度');
   const output = central?.output?.summary;
+  const failed = state?.nodes.filter(node => node.active && node.status === 'failed') || [];
   const basis = typeof central?.input.description === 'string' ? central.input.description : detail.document.markdown.split('\n').find(line => line.trim() && !line.startsWith('#'));
-  return <div className="agent-activity"><div className="agent-identity"><span className={`agent-dot ${detail.phase === 'failed' ? 'failed' : ''}`} /><strong>总 agent</strong><span><BlurText kind="status" text={state?.paused ? '已暂停' : detail.phase === 'retrieving' ? '检索资料' : detail.phase === 'completed' ? '本轮已完成' : '正在工作'} /></span></div><p className="agent-action"><BlurText text={message} /></p>{(basis || output) && <details className="agent-context"><summary>查看行动依据与当前输出</summary>{basis && <div><span>任务依据</span><p>{basis}</p></div>}{output && <div><span>当前输出</span><Markdown text={output} /></div>}</details>}</div>;
+  return <div className="agent-activity"><div className="agent-identity"><span className={`agent-dot ${detail.phase === 'failed' ? 'failed' : ''}`} /><strong>总 agent</strong><span><BlurText kind="status" text={failed.length ? '有节点执行失败' : state?.paused ? '已暂停' : detail.phase === 'retrieving' ? '检索资料' : detail.phase === 'completed' ? '本轮已结束' : '正在工作'} /></span></div>{failed.map(node => <Alert key={node.id} type="error" showIcon title={node.title} description={<BlurText text={failureReason(node)} />} />)}<p className="agent-action"><BlurText text={message} /></p>{(basis || output) && <details className="agent-context"><summary>查看行动依据与当前输出</summary>{basis && <div><span>任务依据</span><p>{basis}</p></div>}{output && <div><span>当前输出</span><Markdown text={output} /></div>}</details>}</div>;
 }
 
 export function ConversationLog({ messages }: { messages: Message[] }) {
@@ -51,12 +53,16 @@ export function ConversationLog({ messages }: { messages: Message[] }) {
 
 export function ResultView({ detail, tab, onTab, onPaper, onNode, onExport }: { detail: TaskDetail; tab: string; onTab: (tab: string) => void; onPaper: (id: string) => void; onNode: (node: VisualNode) => void; onExport: () => void }) {
   const state = detail.state;
+  const assessment = researchAssessment(state);
+  const proposals: unknown[] = Array.isArray(state?.report.structured?.proposals) ? state.report.structured.proposals : [];
   const items: TabsProps['items'] = [
     {
       key: 'report',
       label: '研究结果',
       children: <article className="research-report">
+        {assessment.incomplete && <Alert type="warning" showIcon title="本轮已结束，研究尚未完成验收" description={<BlurText text={`${assessment.description}。下方保留已取得的结果与具体缺口。`} />} />}
         <div className="result-summary"><Markdown text={state?.report.summary || '本轮已结束，尚无报告摘要。'} /></div>
+        {proposals.length > 0 && <section className="report-open-questions"><h2>待验证的新方案</h2>{proposals.map((proposal, index) => <div key={index}><Markdown text={typeof proposal === 'string' ? proposal : Object.entries(proposal as Record<string, unknown>).map(([key, value]) => `**${key}**：${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n\n')} /></div>)}</section>}
         {state?.report.claims.map((claim, index) => {
           const evidence = state.evidence.filter(item => claim.evidenceIds.includes(item.id));
           return <section className="report-claim" key={claim.id}>

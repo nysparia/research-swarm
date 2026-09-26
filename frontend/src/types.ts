@@ -28,6 +28,7 @@ export interface Claim {
   limitations?: string;
 }
 export interface ResearchNode {
+  error?: { code?: string; message: string; at?: string; phase?: string; retryable?: boolean } | null;
   id: string;
   parentId: string | null;
   title: string;
@@ -115,7 +116,7 @@ export interface Snapshot {
   checkpoints: Checkpoint[];
   activeCheckpointId: string | null;
   activities: Activity[];
-  report: { summary: string; claims: Claim[]; unresolved: string[]; approved: boolean };
+  report: { summary: string; claims: Claim[]; unresolved: string[]; approved: boolean; ready?: boolean; structured?: Record<string, unknown> };
   history: Record<string, unknown>[];
   operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string }[];
 }

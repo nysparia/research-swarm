@@ -4,7 +4,9 @@ import copy
 import json
 import threading
 import time
+import traceback
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
 from .store import Store
@@ -49,11 +51,13 @@ class Engine:
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._closed = False
+        self._closing = False
         self._manual_paused = False
         self._runner = runner
         self._store = Store(store_path)
         self._library = copy.deepcopy(library)
         self._executions = {}
+        self._local_tokens = {}
         self._new_checkpoints = []
         self._new_outputs = []
         self._invalidations = []
@@ -76,6 +80,7 @@ class Engine:
                     node["version"] += 1
                     node["startedAt"] = None
             self._activity("system", "已从本机数据库恢复；保持暂停，等待用户继续。")
+            self._recover_tool_receipts(Path(store_path).parent)
             self._commit()
         else:
             self._epoch = 0
@@ -144,6 +149,9 @@ class Engine:
         with self._lock:
             result = copy.deepcopy(self._state)
             for node in result["nodes"]:
+                if node['status'] == 'failed' and not node.get('error'):
+                    entry = next((entry for entry in reversed(node.get('logs', [])) if entry.get('level') == 'error'), {})
+                    node['error'] = {'message': entry.get('message', '执行失败，查看历史执行'), 'code': 'execution_failed', 'at': entry.get('at')}
                 token = self._executions.get(node["id"])
                 if token and node["status"] == "running":
                     node["elapsedMs"] += max(0, int((time.monotonic() - token["started"]) * 1000))
@@ -172,7 +180,12 @@ class Engine:
         with self._lock:
             if self._closed:
                 raise ValueError("研究引擎已关闭")
-            return self._store.node_history(node_id)
+            records = self._store.node_history(node_id)
+            records.extend(dict(entry, valid=False, output=None) for entry in self._state['history']
+                           if entry.get('type') == 'execution-failed' and (node_id is None or entry.get('nodeId') == node_id))
+            records.extend(copy.deepcopy(entry) for entry in self._state['history']
+                           if entry.get('type') == 'tool-executed' and (node_id is None or entry.get('nodeId') == node_id))
+            return sorted(records, key=lambda item: item.get('at', ''))
 
     def export_audit(self):
         return self.node_history(None)
@@ -229,7 +242,14 @@ class Engine:
             self._activity("system", "研究引擎已安全暂停；未完成执行将在恢复后重新运行。")
             self._commit()
             self._closed = True
+            self._closing = True
             self._condition.notify_all()
+            # Drain only local processes being cancelled, never a model network
+            # request. Late atomic receipts are recoverable on the next startup.
+            deadline = time.monotonic()+3
+            while self._local_tokens and time.monotonic()<deadline:
+                self._condition.wait(timeout=max(0, deadline-time.monotonic()))
+            self._closing = False
             self._store.close()
         # Runners may be blocked on a provider. Daemon workers cannot write after close.
         for worker in self._workers:
@@ -939,6 +959,7 @@ class Engine:
             if not node["active"] or node["status"] != "pending":
                 continue
             remaining_depth = max(0, self.MAX_DEPTH - self._depth(node))
+            remaining_tasks = max(0, self.MAX_TASKS - sum(n['active'] for n in self._state['nodes']))
             children = self._children(node["id"])
             if children:
                 if not all(child["status"] == "completed" for child in children):
@@ -946,9 +967,9 @@ class Engine:
                 node["phase"] = "aggregate"
             elif node["phase"] == "aggregate":
                 node["phase"] = "execute"
-            elif node["phase"] == "plan" and remaining_depth == 0:
+            elif node["phase"] == "plan" and (remaining_depth == 0 or (self._autonomous() and remaining_tasks == 0)):
                 node["phase"] = "execute"
-                self._activity("system", "已到达研究分解的深度边界，直接执行当前具体需求并核对验收标准。", node)
+                self._activity("system", "已到达研究分解的深度或任务数量边界，直接执行当前需求；不再重复创建子任务。", node)
             if node["parentId"]:
                 parent = self._get_node(node["parentId"])
                 node["input"]["parentDemand"] = {key: copy.deepcopy(parent["input"].get(key, ""))
@@ -965,6 +986,7 @@ class Engine:
             node["progress"] = 15
             node["startedAt"] = _now()
             node["finishedAt"] = None
+            node['error'] = None
             token = {"id": _id("run"), "epoch": self._epoch, "version": node["version"],
                      "started": time.monotonic(), "nodeId": node["id"], "phase": node["phase"]}
             self._executions[node["id"]] = token
@@ -979,7 +1001,8 @@ class Engine:
                        "round": self._state["project"]["round"],
                        "workflow": self._state["project"].get("workflow", "gated"),
                        "iteration": self._state["project"].get("researchIteration", 1),
-                       "maxIterations": self.MAX_ITERATIONS, "remainingDepth": remaining_depth}
+                       "maxIterations": self.MAX_ITERATIONS, "remainingDepth": remaining_depth,
+                       "remainingTasks": remaining_tasks}
             parents = []
             ancestor = node
             while ancestor["parentId"]:
@@ -1000,6 +1023,63 @@ class Engine:
             return False
         node = self._get_node(token["nodeId"])
         return node["version"] == token["version"] and node["status"] == "running"
+
+    def _record_execution(self, token, result):
+        """Commit process observations before another fallible model request.
+
+        A stale/cancelled attempt is retained in history, never published as the
+        evidence of a newer node execution. Receipts themselves remain on disk.
+        """
+        with self._condition:
+            if self._closed and not self._closing:
+                return
+            current = self._current(token)
+            execution = {key: copy.deepcopy(result.get(key)) for key in
+                         ('tool', 'status', 'returnCode', 'elapsedMs', 'artifacts', 'script',
+                          'stdoutPath', 'stderrPath', 'nodeId', 'nodeVersion', 'round', 'createdAt')}
+            evidence = copy.deepcopy(result.get('evidence', []))
+            execution['receipt'] = evidence[0]['locator'] if evidence else None
+            execution['evidenceIds'] = [item['id'] for item in evidence]
+            valid = current and result.get('status') != 'cancelled'
+            token.setdefault('toolExecutions', []).append(execution)
+            self._history('tool-executed', nodeId=token['nodeId'], version=token['version'],
+                          round=token['context']['round'], executionToken=token['id'],
+                          phase=token['phase'], valid=valid, execution=execution)
+            if valid:
+                known = {item['id'] for item in self._state['evidence']}
+                self._state['evidence'].extend(item for item in evidence if item['id'] not in known)
+            self._commit()
+
+    def _recover_tool_receipts(self, artifact_root):
+        root = artifact_root.resolve()
+        recorded = {(entry.get('execution') or {}).get('receipt') for entry in self._state['history']
+                    if entry.get('type') == 'tool-executed'}
+        for receipt in (root/'runs').glob('local-*/receipt.json'):
+            relative = receipt.relative_to(root).as_posix()
+            if relative in recorded or receipt.is_symlink() or not receipt.resolve().is_relative_to(root/'runs'):
+                continue
+            try:
+                if receipt.stat().st_size > 1024*1024: continue
+                result = json.loads(receipt.read_text('utf-8'))
+                if not result.get('executionToken') or not result.get('nodeId'): continue
+                execution = {key: result.get(key) for key in ('tool', 'status', 'returnCode', 'elapsedMs',
+                             'artifacts', 'script', 'stdoutPath', 'stderrPath', 'createdAt')}
+                execution['receipt'] = relative
+                self._history('tool-executed', nodeId=result['nodeId'], version=result.get('nodeVersion', 1),
+                    round=result.get('round', 1), executionToken=result['executionToken'],
+                    valid=False, recovered=True, execution=execution)
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+
+    def _local_activity(self, token, active):
+        with self._condition:
+            token['localActive'] = active
+            if active:
+                if self._closed: raise RuntimeError('研究引擎已关闭，未启动本机工具')
+                self._local_tokens[token['id']] = token
+            else:
+                self._local_tokens.pop(token['id'], None)
+            self._condition.notify_all()
 
     def _worker(self):
         while True:
@@ -1022,6 +1102,10 @@ class Engine:
             try:
                 if self._runner is None:
                     raise ValueError("尚未配置研究执行器，无法执行任务；请配置后重试")
+                context['cancelled'] = lambda token=token: not self._current(token)
+                context['executionToken'] = token['id']
+                context['record_execution'] = lambda result, token=token: self._record_execution(token, result)
+                context['local_activity'] = lambda active, token=token: self._local_activity(token, active)
                 output = self._runner(node, context, log)
                 with self._condition:
                     if self._current(token):
@@ -1045,11 +1129,15 @@ class Engine:
                     if self._current(token):
                         current = self._get_node(token["nodeId"])
                         current.update(status="failed", finishedAt=_now(), progress=0)
+                        current['error'] = {'code': type(error).__name__, 'message': str(error),
+                                            'at': _now(), 'phase': token['phase'], 'retryable': True}
                         current["elapsedMs"] += max(0, int((time.monotonic() - token["started"]) * 1000))
                         self._executions.pop(current["id"], None)
                         self._activity("system", "任务失败：" + str(error), current, "error")
                         self._history("execution-failed", nodeId=current["id"], version=current["version"],
-                                      input=token.get("input", {}), context=token.get("context", {}), error=str(error))
+                                      input=token.get("input", {}), context=token.get("context", {}), error=str(error),
+                                      executionToken=token['id'], executions=copy.deepcopy(token.get('toolExecutions', [])),
+                                      phase=token['phase'], errorType=type(error).__name__, trace=traceback.format_exc()[-6000:])
                         self._commit()
                         self._condition.notify_all()
 
@@ -1067,7 +1155,7 @@ class Engine:
         known = {str(item["id"]) for item in self._state["evidence"]}
         for evidence in generated:
             if (not isinstance(evidence, dict) or not str(evidence.get("id", "")).startswith("experiment:")
-                    or evidence.get("type") != "experiment" or evidence.get("extractor") != "experiment_statistics"
+                    or evidence.get("type") != "experiment" or evidence.get("extractor") not in ("experiment_statistics", "local_process")
                     or not _text(evidence.get("quote")) or not _text(evidence.get("locator"))):
                 raise ValueError("新生成实验凭据格式无效")
             if evidence["id"] in known:
@@ -1100,6 +1188,39 @@ class Engine:
         if not isinstance(unresolved, list) or any(not isinstance(item, str) for item in unresolved):
             raise ValueError("未决问题必须是字符串列表")
         result["unresolved"] = unresolved
+        # Planning/previous aggregation records are replaced by the next phase;
+        # omitted work must survive those replacements.
+        if node['phase'] != 'plan':
+            for previous in (node.get('output'), node['input'].get('planningOutput')):
+                for key in ('deferredByCapacity', 'deferredFollowups'):
+                    items = ((previous or {}).get('structured') or {}).get(key, [])
+                    if items:
+                        target = result['structured'].setdefault(key, [])
+                        for item in items:
+                            if item not in target: target.append(copy.deepcopy(item))
+        if self._autonomous():
+            available = max(0, self.MAX_TASKS - sum(n['active'] for n in self._state['nodes']))
+            deferred = []
+            def bounded(items):
+                nonlocal available
+                if not isinstance(items, list):
+                    return items
+                kept = []
+                for item in items:
+                    if available <= 0:
+                        deferred.append(copy.deepcopy(item)); continue
+                    available -= 1
+                    item = copy.deepcopy(item)
+                    if isinstance(item, dict) and 'children' in item:
+                        item['children'] = bounded(item['children'])
+                    kept.append(item)
+                return kept
+            for key in ('children', 'followups'):
+                if key in result:
+                    result[key] = bounded(result[key])
+            if deferred:
+                result['structured'].setdefault('deferredByCapacity', []).extend(deferred)
+                result['unresolved'].append(f'任务数量达到上限，{len(deferred)} 项进一步拆解已保留为未执行事项；现有节点直接完成本级工作。')
         if "children" in result:
             if node["phase"] != "plan" and result["children"]:
                 raise ValueError("只有需求分解阶段可以创建子任务")
@@ -1164,6 +1285,28 @@ class Engine:
         node.update(status="completed", progress=100, finishedAt=_now())
         self._activity("AI", "任务完成：" + output["summary"][:600], node)
         if node["id"] == "central":
+            active = [item for item in self._state['nodes'] if item['active']]
+            unexecuted = [{'nodeId': item['id'], 'title': item['title'],
+                          'reason': (item.get('output') or {}).get('summary', '')}
+                         for item in active if item['kind'] == 'experiment' and
+                         ((item.get('output') or {}).get('structured') or {}).get('status') in ('missing_input', 'needs_execution')]
+            unsupported = sum(not claim.get('evidenceIds') for claim in output['claims'])
+            deferred = []
+            for item in active:
+                structured = ((item.get('output') or {}).get('structured') or {})
+                for key in ('deferredByCapacity', 'deferredFollowups'):
+                    if structured.get(key):
+                        deferred.append({'nodeId': item['id'], 'title': item['title'],
+                                         'reason': key, 'tasks': copy.deepcopy(structured[key])})
+            if deferred:
+                output['unresolved'].append(f"仍有 {sum(len(item['tasks']) for item in deferred)} 项计划中的研究因本轮任务或迭代上限而未执行，详见未完成任务记录。")
+            output['structured']['quality'] = {'status': 'incomplete' if unexecuted or unsupported or deferred or output['unresolved'] else 'evidence_ready',
+                'deferredTasks': deferred,
+                'unresolvedQuestions': len(output['unresolved']),
+                'unexecutedExperiments': unexecuted, 'unsupportedClaims': unsupported,
+                'supportedClaims': len(output['claims'])-unsupported,
+                'fullTextEvidence': sum(e.get('type') == 'full_text' for e in self._state['evidence']),
+                'localExecutions': sum(e.get('tool') == 'python_run' and e.get('executionStatus') == 'completed' for e in self._state['evidence'])}
             self._state["report"] = {"summary": output["summary"], "claims": copy.deepcopy(output["claims"]),
                                      "unresolved": copy.deepcopy(output["unresolved"]),
                                      "structured": copy.deepcopy(output["structured"]),
@@ -1171,6 +1314,6 @@ class Engine:
             if self._autonomous():
                 self._state["stage"] = 8
                 self._state["paused"] = True
-                self._activity("system", "本轮研究已完成，候选报告与可追溯产物已就绪；结论尚未获人工认可。")
+                self._activity("system", "本轮执行已结束，报告与原始记录已就绪。" + ('仍有未完成实验或缺证据判断，尚未完成研究验收。' if output['structured']['quality']['status']=='incomplete' else '请结合证据审阅结果。'))
             else:
                 self._create_checkpoint("comparison")

@@ -16,4 +16,4 @@ export interface TaskDetail {
   runs: RunSummary[];
   modelReady?: boolean;
 }
-export const taskPhaseLabels: Record<TaskPhase, string> = { empty: '新任务', requirements: '准备研究', retrieving: '检索资料', researching: '研究中', completed: '已完成', failed: '需要处理' };
+export const taskPhaseLabels: Record<TaskPhase, string> = { empty: '新任务', requirements: '准备研究', retrieving: '检索资料', researching: '研究中', completed: '本轮已结束', failed: '执行失败' };

@@ -56,7 +56,7 @@ def wire(responses, addresses=None):
         destinations.append(address);deadlines.append(timeout)
         return FakeSocket(next(pending), requests)
     with patch("research_swarm.downloads.socket.getaddrinfo", side_effect=lookup), \
-         patch("research_swarm.downloads.socket.create_connection", side_effect=connect), \
+         patch("research_swarm.downloads._connect_address", side_effect=connect), \
          patch("research_swarm.downloads.ssl.create_default_context", return_value=FakeTLS()):
         yield {"requests":requests,"timeouts":deadlines,"destinations":destinations}
 
@@ -157,6 +157,30 @@ class DownloadsTests(unittest.TestCase):
                 result = ensure_paper_pdf(self.adapter,"7")
                 self.assertFalse(result["available"])
                 self.assertEqual(network["requests"],[])
+
+    def test_fake_ip_dns_uses_verified_public_resolution_and_pins_actual_address(self):
+        with wire([response()],addresses=[["198.18.0.8"]]) as network, \
+             patch('research_swarm.downloads._doh_addresses',return_value=['1.1.1.1']) as resolve:
+            result=ensure_paper_pdf(self.adapter,'7')
+        self.assertTrue(result['available'],result)
+        resolve.assert_called_once()
+        self.assertEqual(network['destinations'],[('1.1.1.1',443)])
+
+    def test_fake_ip_fallback_must_still_reject_nonpublic_destination(self):
+        with wire([],addresses=[["198.18.0.8"]]) as network, \
+             patch('research_swarm.downloads._doh_addresses',return_value=['127.0.0.1']):
+            result=ensure_paper_pdf(self.adapter,'7')
+        self.assertFalse(result['available'])
+        self.assertEqual(network['destinations'],[])
+
+    def test_doh_does_not_allow_unbounded_system_dns(self):
+        from research_swarm.downloads import _doh_addresses, _DNS_CACHE
+        body = json.dumps({'Status':0,'Answer':[{'type':1,'data':'151.101.3.42'}]}).encode()
+        _DNS_CACHE.clear()
+        with wire([response(body)]), patch('research_swarm.downloads.socket.getaddrinfo',
+                side_effect=AssertionError('DoH must use its fixed public endpoint without DNS')):
+            self.assertEqual(_doh_addresses('arxiv.org', time.monotonic()+1), ['151.101.3.42'])
+        _DNS_CACHE.clear()
 
     def test_dns_wait_is_included_in_request_deadline(self):
         released = threading.Event()

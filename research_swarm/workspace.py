@@ -143,8 +143,9 @@ class WorkspaceApplication:
         elif state['status'] == 'failed':
             record['phase'] = 'failed'
             failed = [n for n in state['nodes'] if n['active'] and n['status'] == 'failed']
-            record['error'] = '部分研究节点执行失败，可查看节点原因并重试。'
-            self._message(record, 'assistant', f'{len(failed)} 个节点需要处理。已完成的证据和结果保留。', 'progress')
+            reasons = [n['title']+'：'+(n.get('error') or {}).get('message','执行失败，请查看节点记录') for n in failed]
+            record['error'] = '\n'.join(reasons)
+            self._message(record, 'assistant', f'{len(failed)} 个节点执行失败：\n'+'\n'.join('- '+reason for reason in reasons)+'\n已完成结果保留，失败原因和原始错误可在节点历史中查看。', 'progress')
             self._save(record)
 
     def detail(self, task_id):
@@ -162,6 +163,22 @@ class WorkspaceApplication:
             if record['phase'] == 'completed':
                 artifacts = [{'name': '研究报告与数据.zip', 'kind': 'archive', 'url': f'/api/tasks/{task_id}/export'},
                              {'name': '需求文档.md', 'kind': 'requirements', 'url': f'/api/tasks/{task_id}/document'}]
+            if state:
+                seen = set()
+                root = (self._data_root / task_id / 'runtime').resolve()
+                executions = [entry['execution'] for entry in state.get('history', []) if entry.get('type') == 'tool-executed']
+                executions.extend(execution for node in state.get('nodes', [])
+                                  for execution in ((node.get('output') or {}).get('structured') or {}).get('executions', []))
+                for execution in executions:
+                    items = list(execution.get('artifacts') or [])
+                    items.extend({'path': execution[key]} for key in ('script', 'stdoutPath', 'stderrPath', 'receipt') if execution.get(key))
+                    for item in items:
+                        relative = str(item.get('path', ''))
+                        path = (root / relative).resolve()
+                        if relative not in seen and path.is_relative_to(root / 'runs') and path.is_file():
+                            seen.add(relative)
+                            artifacts.append({'name': item.get('name') or path.name, 'kind': 'experiment',
+                                              'url': f'/api/tasks/{task_id}/artifacts/{relative}'})
             return copy.deepcopy({'task': self._summary(record), 'phase': record['phase'], 'document': record['document'],
                                   'messages': record['messages'], 'state': state, 'error': record['error'], 'artifacts': artifacts,
                                   'runs': record['runs'], 'modelReady': self.settings.public()['capabilities']['modelReady']})
@@ -189,7 +206,7 @@ class WorkspaceApplication:
         if not self.settings.public()['capabilities']['modelReady']:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
-只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多2条，用于公开学术检索。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
+只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
         result = parse_json_object(self.settings.chat([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}], max_tokens=6500, json_mode=True))
         if not isinstance(result.get('markdown'), str) or not result['markdown'].strip() or len(result['markdown']) > 60000:
             raise ValueError('模型没有返回有效需求文档，用户编辑已保存，可重试润色')
@@ -207,7 +224,7 @@ class WorkspaceApplication:
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
                 'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': 'model', 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:2]]}
+                'queries': [q.strip()[:1000] for q in queries[:4]]}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
@@ -449,6 +466,14 @@ class WorkspaceApplication:
             return 200, detail, 'application/json', None
         if action == 'document':
             return 200, detail['document']['markdown'].encode('utf-8'), 'text/markdown; charset=utf-8', {'Content-Disposition': 'attachment; filename="requirements.md"'}
+        if action.startswith('artifacts/'):
+            root = (self._data_root / task_id / 'runtime').resolve()
+            path = (root / action[len('artifacts/'):]).resolve()
+            allowed = {a['url'] for a in detail['artifacts'] if a.get('kind') == 'experiment'}
+            if f'/api/tasks/{task_id}/{action}' not in allowed or not path.is_relative_to(root/'runs') or not path.is_file():
+                raise ValueError('找不到当前研究的已登记产物')
+            from urllib.parse import quote
+            return 200, path.read_bytes(), 'application/octet-stream', {'Content-Disposition': "attachment; filename*=UTF-8''"+quote(path.name)}
         if action.startswith('runs/'):
             index = int(action.split('/')[-1])
             path = self._data_root / task_id / 'reports' / f'round-{index}.json'

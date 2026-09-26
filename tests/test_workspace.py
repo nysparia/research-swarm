@@ -96,6 +96,24 @@ class WorkspaceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.app.detail(task_id)
 
+    def test_recorded_artifacts_remain_downloadable_without_model_output(self):
+        task_id = self.new()
+        record = self.app._records[task_id]
+        record['phase'] = 'completed'
+        record['runs'] = [{'round':1}]
+        root = self.app._data_root / task_id
+        artifact = root/'runtime/runs/local-test/artifacts/metrics.json'
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text('{"score":1}')
+        state = {'nodes':[], 'history':[{'type':'tool-executed','valid':False,
+            'execution':{'artifacts':[{'name':'metrics.json','path':'runs/local-test/artifacts/metrics.json'}]}}]}
+        (root/'reports').mkdir()
+        (root/'reports/round-1.json').write_text(json.dumps(state))
+        artifacts = self.detail(task_id)['artifacts']
+        self.assertTrue(any(a['name']=='metrics.json' for a in artifacts))
+        download = self.app.read_api(f'/api/tasks/{task_id}/artifacts/runs/local-test/artifacts/metrics.json')
+        self.assertEqual(download[1], b'{"score":1}')
+
     def test_single_deepseek_key_sets_model_and_shared_connection_without_exposing_secret(self):
         self.new()
         observed = []

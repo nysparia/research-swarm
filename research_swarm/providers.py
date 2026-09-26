@@ -62,7 +62,7 @@ class Settings:
         with self.lock:
             p = self.data['provider']
             local = urllib.parse.urlparse(p.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
-            return {'mode': self.data['mode'], 'provider': {k: p.get(k, '') for k in ('type', 'baseUrl', 'model')} | {'hasKey': bool(self._key())}, 'sourcePath': str(self.source or ''), 'capabilities': {'modelReady': bool(p.get('model') and p.get('baseUrl') and (local or self._key())), 'tools': ['paper_search', 'paper_read', 'evidence_lookup', 'facet_read', 'experiment_statistics'], 'experimentalExecution': '用户数据的分组统计与自助法差值区间；不执行任意系统命令', 'sourceRetrieval': bool(self.source), 'dsh': False}}
+            return {'mode': self.data['mode'], 'provider': {k: p.get(k, '') for k in ('type', 'baseUrl', 'model')} | {'hasKey': bool(self._key())}, 'sourcePath': str(self.source or ''), 'capabilities': {'modelReady': bool(p.get('model') and p.get('baseUrl') and (local or self._key())), 'tools': ['paper_search', 'paper_read', 'paper_retrieve', 'evidence_lookup', 'facet_read', 'experiment_statistics', 'local_environment', 'python_install', 'python_run', 'artifact_read'], 'experimentalExecution': '本课题独立 Python 环境：环境探测、科研依赖安装、实际脚本执行、超时与暂停、原始日志和产物凭据', 'sourceRetrieval': bool(self.source), 'dsh': False}}
 
     def update(self, payload: dict) -> dict:
         with self.lock:

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .providers import Settings
 from .runner import ResearchRunner
+from .local_tools import LocalResearchTools
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +36,7 @@ def export_bundle(state: dict, artifact_root: Path) -> bytes:
     if not report.get('approved') and not report.get('ready'):
         raise ValueError('请先完成最终输出确认，再导出研究结果')
     project = state.get('project', {})
-    decision = '用户已确认本轮输出。确认表示用户决策记录，不等同外部科学验证。' if report.get('approved') else '本轮研究已完成。以下是 AI 的研究结果与候选判断，未代替用户作科学结论。'
+    decision = '用户已确认本轮输出。确认表示用户决策记录，不等同外部科学验证。' if report.get('approved') else '本轮执行已结束。以下区分已取得证据、实测结果与尚未验证的候选；报告可导出不代表所有研究验收项已完成。'
     lines = ['# ' + project.get('title', '科研结果'), '', f'研究轮次：{project.get("round", 1)}', f'运行模式：{"已有数据核验" if project.get("mode") == "evidence" else "模型科研运行"}', '', decision, '', report.get('summary', ''), '', '## 结论与证据', '']
     evidence = {e['id']: e for e in state.get('evidence', [])}
     papers = {p['id']: p for p in state.get('papers', [])}
@@ -62,11 +63,21 @@ def export_bundle(state: dict, artifact_root: Path) -> bytes:
         archive.writestr('activity.json', json.dumps(state.get('activities', []), ensure_ascii=False, indent=2).encode('utf-8'))
         archive.writestr('execution-history.json', json.dumps(state.get('executionHistory', []), ensure_ascii=False, indent=2).encode('utf-8'))
         artifact_root = Path(artifact_root).resolve()
-        for e in evidence.values():
+        included = set()
+        recorded = [{'type': 'experiment', 'extractor': 'local_process', 'locator': entry['execution']['receipt']}
+                    for entry in state.get('history', []) if entry.get('type') == 'tool-executed'
+                    and (entry.get('execution') or {}).get('receipt')]
+        for e in [*evidence.values(), *recorded]:
             if e.get('type') == 'experiment':
                 path = (artifact_root / e.get('locator', '')).resolve()
                 if path.is_relative_to(artifact_root / 'runs') and path.is_file():
-                    archive.write(path, path.relative_to(artifact_root).as_posix())
+                    related = list(path.parent.rglob('*')) if e.get('extractor') == 'local_process' else [path]
+                    for file in related:
+                        if file.is_file() and not file.is_symlink() and file.resolve().is_relative_to(artifact_root/'runs') and file.stat().st_size<=50*1024*1024:
+                            relative=file.relative_to(artifact_root).as_posix()
+                            if relative not in included:
+                                included.add(relative)
+                                archive.write(file,relative)
     return stream.getvalue()
 
 
@@ -80,7 +91,7 @@ class ResearchApplication:
         self.library = Library(source)
         self.settings = Settings(self.state_dir, Path(source))
         self.runner = ResearchRunner(self.settings, self.state_dir, retrieve=self._node_retrieve,
-                                     read_pdf=self._read_pdf)
+                                     read_pdf=self._read_pdf, local_tools=LocalResearchTools(self.state_dir))
         self.engine = Engine(self.library.load(), self.state_dir / 'swarm.sqlite', runner=self.runner, max_workers=max_workers, workflow=workflow)
         self.static_dir = Path(static_dir or APP_ROOT / 'dist')
         self.operations = []
@@ -157,8 +168,9 @@ class ResearchApplication:
             raise ValueError('该节点没有有效的外部检索授权')
         with self.operation_lock:
             count = self.search_budgets.get(budget_id, 0)
-            if count >= 2:
-                raise ValueError('本次深入研究已用完 2 次补充检索预算；可基于现有资料继续或由用户再发起深入研究')
+            budget_limit = 8 if context.get('workflow') == 'autonomous' else 2
+            if count >= budget_limit:
+                raise ValueError(f'本轮已用完 {budget_limit} 次外部检索预算；请汇总实际取得的材料，明确未核验事项。')
             self.search_budgets[budget_id] = count + 1
             temporary = self.budget_path.with_suffix('.tmp')
             temporary.write_text(json.dumps(self.search_budgets), encoding='utf-8')

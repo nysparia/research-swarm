@@ -25,7 +25,7 @@ import threading
 import time
 from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import HTTPSHandler, HTTPRedirectHandler, ProxyHandler, build_opener
+from urllib.request import HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
 import uuid
 
 
@@ -43,6 +43,7 @@ _ACADEMIC_HOSTS = frozenset({
 _ARXIV_ID = re.compile(r"(?:\d{4}\.\d{4,5}|[a-z][a-z.\-]*/\d{7})(?:v\d+)?", re.I)
 _LOCK_GUARD = threading.Lock()
 _PAPER_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_DNS_CACHE = {}
 
 
 class _Unavailable(ValueError):
@@ -95,9 +96,64 @@ def _public_addresses(host: str, deadline: float) -> list[str]:
     if not success:
         raise records
     addresses = list(dict.fromkeys(record[4][0] for record in records))
+    # Some local TUN clients synthesize benchmarking-range DNS answers. Obtain
+    # real addresses through authenticated HTTPS DNS, then retain public-IP
+    # validation and the pinned TLS connection. Never connect to the fake IP.
+    if addresses and all(ipaddress.ip_address(address) in ipaddress.ip_network('198.18.0.0/15') for address in addresses):
+        addresses = _doh_addresses(host, deadline)
     if not addresses or any(not _is_public(address) for address in addresses):
         raise _Unavailable("公开全文域名解析到非公网地址，未建立连接")
     return sorted(addresses, key=lambda address: ":" in address)
+
+
+def _doh_addresses(host, deadline):
+    if host not in _ACADEMIC_HOSTS:
+        raise _Unavailable('DNS 查询目标不属于公开学术来源')
+    cached = _DNS_CACHE.get(host)
+    if cached and cached[0] > time.monotonic():
+        return list(cached[1])
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            raise _Unavailable('公开 DNS 服务重定向被拒绝')
+    # Bootstrap DNS through Cloudflare's fixed public anycast addresses. Resolving
+    # the resolver through system DNS would reintroduce an unbounded DNS wait.
+    # TLS still authenticates cloudflare-dns.com, with redirects/proxies disabled.
+    class ResolverHTTPS(HTTPSHandler):
+        def https_open(self, request):
+            if urlsplit(request.full_url).hostname != 'cloudflare-dns.com':
+                raise _Unavailable('DNS 服务地址无效')
+            def connection(host, **kwargs):
+                return _PinnedHTTPSConnection(host, ['1.1.1.1', '1.0.0.1'], deadline, **kwargs)
+            return self.do_open(connection, request, context=self._context)
+    opener = build_opener(ProxyHandler({}), ResolverHTTPS(context=ssl.create_default_context()), NoRedirect())
+    request = Request('https://cloudflare-dns.com/dns-query?'+urlencode({'name':host,'type':'A'}),
+                      headers={'Accept':'application/dns-json','User-Agent':'research-swarm/1.0'})
+    remaining = min(10, deadline-time.monotonic())
+    if remaining<=0: raise TimeoutError('public DNS deadline')
+    with opener.open(request,timeout=remaining) as response:
+        body = response.read(65537)
+        if len(body) > 65536: raise _Unavailable('公开 DNS 响应过大')
+        data=json.loads(body)
+    addresses=list(dict.fromkeys(item.get('data','') for item in data.get('Answer',[]) if item.get('type')==1))
+    if data.get('Status') != 0 or not addresses or any(not _is_public(address) for address in addresses):
+        raise _Unavailable('公开 DNS 未返回可验证的公网地址')
+    _DNS_CACHE[host]=(time.monotonic()+300,addresses)
+    return addresses
+
+
+def _connect_address(address, timeout, source_address=None):
+    # socket.create_connection performs getaddrinfo even on numeric addresses.
+    # Use a numeric socket directly to guarantee no second DNS lookup can block.
+    ip, port = address
+    raw = socket.socket(socket.AF_INET6 if ':' in ip else socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        raw.settimeout(timeout)
+        if source_address: raw.bind(source_address)
+        raw.connect((ip, port))
+        return raw
+    except BaseException:
+        raw.close()
+        raise
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -117,8 +173,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
                 raise TimeoutError("public PDF request deadline")
             raw = None
             try:
-                raw = socket.create_connection((address, self.port), timeout=remaining,
-                                               source_address=self.source_address)
+                raw = _connect_address((address, self.port), timeout=remaining,
+                                       source_address=self.source_address)
                 if not _is_public(raw.getpeername()[0]):
                     raise _Unavailable("全文连接目标不是公网地址")
                 remaining = min(_TIMEOUT, self._deadline - time.monotonic())
