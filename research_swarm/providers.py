@@ -118,23 +118,28 @@ class Settings:
 
     def chat(self, messages: list[dict], max_tokens: int = 5500, *, json_mode=False, on_retry=None) -> str:
         messages = copy.deepcopy(messages)
-        for attempt in range(2 if json_mode else 1):
+        repaired_output, retried_connection = False, False
+        # A transport retry must not spend the one JSON-format repair (or vice versa).
+        # Each failure class gets one retry, for at most three requests in total.
+        for attempt in range(3 if json_mode else 1):
             try:
                 text = self._chat_once(messages, max_tokens, json_mode=json_mode)
                 if json_mode:
                     parse_json_object(text)
                 return text
             except ModelOutputError as exc:
-                if not json_mode or attempt:
+                if not json_mode or repaired_output:
                     raise
+                repaired_output = True
                 if on_retry:
                     on_retry('模型响应格式不完整，正在自动重试 1/1；尚未写入研究结果。')
                 if isinstance(exc, ModelOutputTruncated):
                     max_tokens = min(16000, max_tokens * 2)
                 messages.append({'role': 'user', 'content': '上一响应没有形成可解析的 JSON 对象。请按原定结构重新输出，压缩长文本，最多 8 条 claims；只返回一个完整 JSON 对象，不含代码围栏、说明前缀或其他文本。不要为了格式捏造证据。'})
             except ModelConnectionError:
-                if not json_mode or attempt:
+                if not json_mode or retried_connection:
                     raise
+                retried_connection = True
                 if on_retry:
                     on_retry('模型连接暂时失败，正在重试 1/1；已完成节点保持不变。')
 

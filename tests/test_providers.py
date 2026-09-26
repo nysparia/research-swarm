@@ -77,6 +77,47 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(parse_json_object(result)['summary'], 'ok')
             self.assertEqual(request.call_count, 2)
 
+    def test_connection_retry_does_not_consume_json_repair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            requests, logs = [], []
+            responses = iter([urllib.error.URLError('temporary connection failure'),
+                              '{"summary":"topic"} trailing', '{"summary":"valid topic"}'])
+            def respond(request, **kwargs):
+                requests.append(json.loads(request.data))
+                response = next(responses)
+                if isinstance(response, Exception):
+                    raise response
+                return io.BytesIO(json.dumps({'choices': [{'message': {'content': response}}]}).encode())
+            with patch('urllib.request.urlopen', side_effect=respond):
+                text = settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True, on_retry=logs.append)
+            self.assertEqual(parse_json_object(text)['summary'], 'valid topic')
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(len(logs), 2)
+            self.assertIn('完整 JSON', requests[-1]['messages'][-1]['content'])
+
+    def test_json_repair_does_not_consume_connection_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            malformed = io.BytesIO(b'{"choices":[{"message":{"content":"invalid"}}]}')
+            valid = io.BytesIO(b'{"choices":[{"message":{"content":"{\\"summary\\":\\"ok\\"}"}}]}')
+            with patch('urllib.request.urlopen', side_effect=[malformed, urllib.error.URLError('temporary'), valid]) as request:
+                text = settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True)
+            self.assertEqual(parse_json_object(text)['summary'], 'ok')
+            self.assertEqual(request.call_count, 3)
+
+    def test_mixed_failures_still_stop_after_one_json_repair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            invalid = lambda: io.BytesIO(b'{"choices":[{"message":{"content":"invalid"}}]}')
+            with patch('urllib.request.urlopen', side_effect=[urllib.error.URLError('temporary'), invalid(), invalid()]) as request:
+                with self.assertRaisesRegex(ValueError, 'JSON'):
+                    settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True)
+            self.assertEqual(request.call_count, 3)
+
     def test_authentication_error_is_not_retried(self):
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(Path(temp), None)
