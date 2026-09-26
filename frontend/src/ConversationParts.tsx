@@ -86,7 +86,7 @@ export function ResultView({ detail, tab, onTab, onPaper, onNode, onExport }: { 
       key: 'process',
       label: '研究过程',
       children: <>
-        <Suspense fallback={<div className="graph-loading" role="status"><Spin /><span>加载三维结构</span></div>}><ResearchGraph key={detail.task.id} state={state} onSelect={onNode} /></Suspense>
+        <Suspense fallback={<div className="graph-loading" role="status"><Spin /><span>加载二维结构</span></div>}><ResearchGraph key={detail.task.id} state={state} onSelect={onNode} /></Suspense>
         {state && <div className="process-log"><h2>执行记录</h2>{state.activities.map(activity => <div className="process-line" key={activity.id}><time>{timeLabel(activity.at)}</time><span>{activity.actor === 'user' ? '用户' : activity.actor === 'AI' ? 'agent' : '系统'}</span><p>{activity.message}</p></div>)}</div>}
         <details className="complete-conversation"><summary>查看完整对话</summary><ConversationLog messages={detail.messages} /></details>
       </>,
