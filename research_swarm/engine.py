@@ -136,9 +136,15 @@ class Engine:
     def _autonomous(self):
         return self._state["project"].get("workflow", "gated") == "autonomous"
 
+    def _limit(self, name):
+        default = {'maxTasks': self.MAX_TASKS, 'maxIterations': self.MAX_ITERATIONS, 'maxDepth': self.MAX_DEPTH,
+                   'maxParallel': len(self._workers) if hasattr(self, '_workers') else 3}[name]
+        return self._state['project'].get('researchBudget', {}).get(name, default)
+
     def _node(self, node_id, parent_id, title, kind, source_id, input_data, active):
+        from .paper import ROLES
         return {"id": node_id, "parentId": parent_id, "title": title,
-                "role": "中央研究代理" if node_id == "central" else "切面研究代理" if source_id else "研究任务代理",
+                "role": "中央研究代理" if node_id == "central" else ROLES.get(input_data.get('specialist'), "切面研究代理" if source_id else "研究任务代理"),
                 "kind": kind, "phase": "plan" if kind == "research" else "execute",
                 "status": "pending", "progress": 0, "input": copy.deepcopy(input_data),
                 "output": None, "logs": [], "sourceNodeId": source_id,
@@ -209,6 +215,8 @@ class Engine:
                 "retry": self._retry, "mode": self._mode, "next-round": self._next_round,
                 "refresh-library": self._refresh_library,
                 "start-autonomous": self._start_autonomous,
+                "research-choice": self._research_choice,
+                "paper-context": self._paper_context,
             }
             if action not in methods:
                 raise ValueError("不支持的操作: " + str(action))
@@ -395,6 +403,15 @@ class Engine:
             raise ValueError("研究任务名称不能为空")
         self._stop_running("开始自主研究")
         self._state["project"].update(workflow="autonomous", mode=mode, researchStarted=True, researchIteration=1)
+        self._state['project']['paperResearch'] = bool(payload.get('paperResearch'))
+        self._state['project']['paperContext'] = copy.deepcopy(payload.get('paperContext') or {})
+        if payload.get('budgetTier') is not None:
+            from .paper import BUDGETS
+            if payload['budgetTier'] not in BUDGETS:
+                raise ValueError('研究规模选项无效')
+            self._state['project']['researchBudget'] = {**BUDGETS[payload['budgetTier']],
+                'maxParallel': min(BUDGETS[payload['budgetTier']]['maxParallel'], len(self._workers))}
+        self._state['project']['researchDecision'] = None
         if "title" in payload:
             self._state["project"]["title"] = _text(payload["title"])
         self._state["requirements"] = requirements
@@ -511,6 +528,8 @@ class Engine:
         self._activity("user", "已暂停任务派发；未完成执行的迟到结果将被废弃。")
 
     def _resume(self, payload):
+        if self._state['project'].get('researchDecision'):
+            raise ValueError('当前有研究决策等待你选择，继续按钮不能代替你的判断')
         self._manual_paused = False
         if self._autonomous() and not self._state["project"].get("researchStarted"):
             self._state["paused"] = True
@@ -523,6 +542,36 @@ class Engine:
         else:
             self._state["paused"] = False
             self._activity("user", "已继续本轮研究任务。")
+
+    def _paper_context(self, payload):
+        self._state['project']['paperContext'] = copy.deepcopy(payload.get('paperContext') or {})
+        if payload.get('supersedeDecision') and self._state['project'].get('researchDecision'):
+            self._history('research-decision-superseded', decision=copy.deepcopy(self._state['project']['researchDecision']), reason='用户重新编辑了研究需求')
+            self._state['project']['researchDecision'] = None
+
+    def _research_choice(self, payload):
+        question = self._state['project'].get('researchDecision')
+        if not question or payload.get('decisionId') != question['id']:
+            raise ValueError('研究决策已变化，请重新查看')
+        index = payload.get('optionIndex')
+        note = payload.get('note', '')
+        if not isinstance(note, str) or len(note) > 8000:
+            raise ValueError('补充说明不能超过 8000 字符')
+        if index is not None and (type(index) is not int or not 0 <= index < len(question['options'])):
+            raise ValueError('请选择有效的研究方向')
+        if index is None and not note.strip():
+            raise ValueError('请选择一个方向或填写自己的判断')
+        option = question['options'][index] if index is not None else {'label': '我的判断', 'effect': ''}
+        answer = option['label'] + '：' + option['effect'] + ('\n' + note.strip() if note.strip() else '')
+        node = self._get_node(question['nodeId'])
+        affected = self._affected(node['id'], 'modify')
+        self._intervene({'nodeId': node['id'], 'kind': 'modify', 'expectedRevision': payload.get('expectedRevision'),
+                         'text': node['input'].get('description', node['title']) + '\n用户已决定：' + answer})
+        choice = {**copy.deepcopy(question), 'answer': answer, 'at': _now(), 'actor': 'user', 'affectedIds': affected}
+        self._state['project'].setdefault('researchChoices', []).append(choice)
+        self._state['project']['researchDecision'] = None
+        self._history('research-choice', **choice)
+        self._resume({})
 
     def _kind(self, kind):
         if kind not in ("modify", "insert", "reject", "deepen"):
@@ -775,7 +824,7 @@ class Engine:
         if node["status"] != "failed":
             raise ValueError("只有失败节点可以重试")
         self._invalidate([node["id"]], "用户重试失败任务")
-        if not self._pending_checkpoint():
+        if not self._pending_checkpoint() and not self._state['project'].get('researchDecision'):
             self._state["paused"] = False
             self._manual_paused = False
         self._activity("user", "已安排失败任务重试。", node)
@@ -792,6 +841,7 @@ class Engine:
 
     def _next_round(self, payload):
         self._stop_running("开始下一轮")
+        self._state['project']['researchDecision'] = None
         self._manual_paused = False
         self._history("round-complete", report=copy.deepcopy(self._state["report"]),
                       requirements=copy.deepcopy(self._state["requirements"]))
@@ -894,14 +944,14 @@ class Engine:
 
         def validate(items, depth):
             nonlocal count
-            if items and depth > self.MAX_DEPTH:
-                raise ValueError("研究任务分解深度不能超过 4 层")
+            if items and depth > self._limit('maxDepth'):
+                raise ValueError(f"研究任务分解深度不能超过 {self._limit('maxDepth')} 层")
             if not isinstance(items, list):
                 raise ValueError("嵌套子任务必须是列表")
             for child in items:
                 count += 1
-                if count > self.MAX_TASKS:
-                    raise ValueError("活动研究任务总数不能超过 80")
+                if count > self._limit('maxTasks'):
+                    raise ValueError(f"活动研究任务总数不能超过 {self._limit('maxTasks')}")
                 if not isinstance(child, dict) or id(child) in visited:
                     raise ValueError("研究任务层级无效或含重复引用")
                 visited.add(id(child))
@@ -939,6 +989,8 @@ class Engine:
                             status="pending", active=True, progress=0, input=input_data, output=None,
                             evidenceIds=[], startedAt=None, finishedAt=None, elapsedMs=0,
                             version=node["version"] + 1)
+                from .paper import ROLES
+                node['role'] = ROLES.get(child.get('specialist'), node['role'])
             else:
                 node = self._node(_id("task"), parent["id"], _text(child["title"]),
                                   child["kind"], source, input_data, True)
@@ -951,15 +1003,17 @@ class Engine:
                 node["phase"] = "aggregate"
 
     def _next_job(self):
-        if (self._state["paused"] or self._pending_checkpoint() or self._state["report"]["approved"]
+        if (self._state["paused"] or self._pending_checkpoint() or self._state['project'].get('researchDecision') or self._state["report"]["approved"]
                 or self._state["report"].get("ready")
                 or (self._autonomous() and not self._state["project"].get("researchStarted"))):
+            return None
+        if len(self._executions) >= self._limit('maxParallel'):
             return None
         for node in self._state["nodes"]:
             if not node["active"] or node["status"] != "pending":
                 continue
-            remaining_depth = max(0, self.MAX_DEPTH - self._depth(node))
-            remaining_tasks = max(0, self.MAX_TASKS - sum(n['active'] for n in self._state['nodes']))
+            remaining_depth = max(0, self._limit('maxDepth') - self._depth(node))
+            remaining_tasks = max(0, self._limit('maxTasks') - sum(n['active'] for n in self._state['nodes']))
             children = self._children(node["id"])
             if children:
                 if not all(child["status"] == "completed" for child in children):
@@ -1001,7 +1055,7 @@ class Engine:
                        "round": self._state["project"]["round"],
                        "workflow": self._state["project"].get("workflow", "gated"),
                        "iteration": self._state["project"].get("researchIteration", 1),
-                       "maxIterations": self.MAX_ITERATIONS, "remainingDepth": remaining_depth,
+                       "maxIterations": self._limit("maxIterations"), "remainingDepth": remaining_depth,
                        "remainingTasks": remaining_tasks}
             parents = []
             ancestor = node
@@ -1009,9 +1063,12 @@ class Engine:
                 ancestor = self._get_node(ancestor["parentId"])
                 parents.append({"id": ancestor["id"], "input": copy.deepcopy(ancestor["input"])})
             context["ancestors"] = parents
+            context['paperResearch'] = self._state['project'].get('paperResearch', False)
+            context['paperContext'] = copy.deepcopy(self._state['project'].get('paperContext', {}))
+            context['researchChoices'] = copy.deepcopy(self._state['project'].get('researchChoices', []))
             token["input"] = copy.deepcopy(node["input"])
             token["context"] = {key: copy.deepcopy(context[key])
-                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth")}
+                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth", "remainingTasks", "paperResearch", "paperContext", "researchChoices")}
             return copy.deepcopy(node), context, token
         return None
 
@@ -1048,6 +1105,15 @@ class Engine:
             if valid:
                 known = {item['id'] for item in self._state['evidence']}
                 self._state['evidence'].extend(item for item in evidence if item['id'] not in known)
+            self._commit()
+
+    def _record_execution_started(self, token, execution):
+        with self._condition:
+            if not self._current(token):
+                return
+            self._history('tool-started', nodeId=token['nodeId'], version=token['version'],
+                          round=token['context']['round'], executionToken=token['id'], phase=token['phase'],
+                          valid=True, execution=copy.deepcopy(execution))
             self._commit()
 
     def _recover_tool_receipts(self, artifact_root):
@@ -1105,6 +1171,7 @@ class Engine:
                 context['cancelled'] = lambda token=token: not self._current(token)
                 context['executionToken'] = token['id']
                 context['record_execution'] = lambda result, token=token: self._record_execution(token, result)
+                context['record_execution_started'] = lambda result, token=token: self._record_execution_started(token, result)
                 context['local_activity'] = lambda active, token=token: self._local_activity(token, active)
                 output = self._runner(node, context, log)
                 with self._condition:
@@ -1164,6 +1231,8 @@ class Engine:
                     raise ValueError("实验凭据 ID 已存在且内容不同")
             known.add(evidence["id"])
         result["evidenceIds"] = _unique(result.get("evidenceIds", []))
+        from .paper import validate_paper_output
+        validate_paper_output(result.get('structured', {}), known)
         if set(result["evidenceIds"]) - known:
             raise ValueError("研究结果引用了未知证据 ID")
         claims = []
@@ -1199,7 +1268,7 @@ class Engine:
                         for item in items:
                             if item not in target: target.append(copy.deepcopy(item))
         if self._autonomous():
-            available = max(0, self.MAX_TASKS - sum(n['active'] for n in self._state['nodes']))
+            available = max(0, self._limit('maxTasks') - sum(n['active'] for n in self._state['nodes']))
             deferred = []
             def bounded(items):
                 nonlocal available
@@ -1243,12 +1312,12 @@ class Engine:
         output = self._validated_output(node, output)
         followups = output.get("followups", []) if self._autonomous() and node["id"] == "central" else []
         iteration = self._state["project"].get("researchIteration", 1)
-        continue_research = bool(followups and iteration < self.MAX_ITERATIONS)
+        continue_research = bool(followups and iteration < self._limit('maxIterations'))
         if self._autonomous() and node["id"] == "central" and node["phase"] != "plan":
             output["structured"]["autonomousIterations"] = iteration
             if followups and not continue_research:
                 output["structured"]["deferredFollowups"] = copy.deepcopy(followups)
-                output["unresolved"].append("本轮自动研究预算已用完（最多 3 次研究迭代）；其余后续任务尚未执行，可发起下一轮。")
+                output["unresolved"].append(f"本轮自动研究预算已用完（最多 {self._limit('maxIterations')} 次研究迭代）；其余后续任务尚未执行，可发起下一轮。")
         known = {item["id"] for item in self._state["evidence"]}
         self._state["evidence"].extend(copy.deepcopy(item) for item in output.get("generatedEvidence", [])
                                        if item["id"] not in known)
@@ -1260,6 +1329,16 @@ class Engine:
                                   "at": _now(), "input": copy.deepcopy(token["input"]),
                                   "context": copy.deepcopy(token["context"]), "output": copy.deepcopy(output)})
         self._executions.pop(node["id"], None)
+        decision = output['structured'].get('researchDecision')
+        if decision and self._state['project'].get('paperResearch'):
+            self._state['project']['researchDecision'] = {**copy.deepcopy(decision), 'id': _id('decision'),
+                'nodeId': node['id'], 'version': node['version'], 'createdAt': _now()}
+            # Mark this accepted node pending before cancelling other in-flight workers.
+            node['status'] = 'pending'
+            self._stop_running('等待用户研究决策')
+            self._state['paused'] = True
+            self._manual_paused = True
+            self._activity('AI', '请你决定研究方向：' + decision['question'], node)
         if node["phase"] == "plan":
             children = output.get("children", [])
             node["input"]["planningOutput"] = copy.deepcopy(output)
@@ -1311,6 +1390,10 @@ class Engine:
                                      "unresolved": copy.deepcopy(output["unresolved"]),
                                      "structured": copy.deepcopy(output["structured"]),
                                      "approved": False, "ready": self._autonomous()}
+            if self._state['project'].get('researchDecision'):
+                self._state['report']['ready'] = False
+                self._state['stage'] = 6
+                return
             if self._autonomous():
                 self._state["stage"] = 8
                 self._state["paused"] = True

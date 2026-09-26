@@ -30,6 +30,26 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '证据'):
             validate_result({'summary': 'claim', 'claims': [{'text': 'fast', 'evidenceIds': ['999']}]}, LIBRARY)
 
+    def test_experiment_can_request_a_user_decision_before_execution(self):
+        import json
+        from research_swarm.local_tools import LocalResearchTools
+        calls = []
+        decision = {'question': '先测精度还是延迟？', 'options': [
+            {'label': '精度', 'effect': '先做分类对照'}, {'label': '延迟', 'effect': '先测本机延迟'}]}
+        class Provider:
+            def chat(self, messages, **kwargs):
+                calls.append(messages)
+                return json.dumps({'summary': '需要用户判断', 'claims': [{'text': '未经执行的结果', 'evidenceIds': []}],
+                    'structured': {'researchDecision': decision, 'paperSections': [{'id': 'results', 'markdown': '未执行的结果', 'evidenceIds': []}]}})
+        runner = ResearchRunner(Provider(), Path(self.temp.name), local_tools=LocalResearchTools(Path(self.temp.name)))
+        result = runner({'id': 'experiment', 'kind': 'experiment', 'phase': 'execute', 'input': {}},
+                        dict(self.context, mode='llm', paperResearch=True), lambda _: None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['structured']['researchDecision'], decision)
+        self.assertEqual(result['claims'], [])
+        self.assertNotIn('paperSections', result['structured'])
+        self.assertEqual(result['structured']['status'], 'awaiting_user')
+
     def test_empty_optional_facet_reference_means_unassigned(self):
         task = {'title': '比较', 'description': '对比机制', 'acceptance': '说明局限', 'sourceNodeId': ''}
         result = validate_result({'summary': '计划', 'children': [task]}, LIBRARY)

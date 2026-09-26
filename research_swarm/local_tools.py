@@ -72,7 +72,9 @@ class LocalResearchTools:
             executable = directory/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
             if not executable.is_file():
                 log('正在创建本课题独立 Python 环境，不修改系统 Python。')
-                result = self._process([sys.executable, '-m', 'venv', str(directory)],
+                # Bundled setuptools includes deeply nested test data that breaks Windows MAX_PATH.
+                # Stdlib experiments need only the isolated interpreter; install pip lazily if uv is absent.
+                result = self._process([sys.executable, '-m', 'venv', '--without-pip', str(directory)],
                                        self.root, self.root/'environment-setup', 90, log, cancelled)
                 if result['status'] != 'completed':
                     raise RuntimeError('课题 Python 环境创建失败：'+result['stderr'][-1800:])
@@ -165,16 +167,31 @@ class LocalResearchTools:
                           '--cache-dir',str(self.root/'package-cache'),'pip','install','--python',str(python),
                           '--default-index',index,'--only-binary',':all:',*packages]
                 else:
+                    bootstrap = "import ensurepip,pathlib,runpy,sys; wheel=next((pathlib.Path(ensurepip.__file__).parent/'_bundled').glob('pip-*.whl')); sys.path.insert(0,str(wheel)); sys.argv=['pip','--isolated','install','--no-index','--no-deps','--upgrade',str(wheel)]; runpy.run_module('pip',run_name='__main__')"
+                    log('正在从 Python 自带安装包准备课题 pip，不安装无关的环境测试文件。')
+                    prepared = self._process([str(python), '-I', '-X', 'utf8', '-c', bootstrap], self.root,
+                                             self.root/'environment-pip', 90, log, cancelled)
+                    if prepared['status'] != 'completed':
+                        raise RuntimeError('课题 pip 初始化失败：' + prepared['stderr'][-1800:])
                     argv=[str(python),'-m','pip','--isolated','install','--only-binary',':all:',
                           '--timeout','30','--retries','1','--index-url',index,*packages]
                 timeout=300
             else:
                 script.write_text(code,encoding='utf-8')
-                argv=[str(python),'-I','-u',str(script)]
+                # -I ignores PYTHONUTF8/PYTHONIOENCODING; make UTF-8 explicit for Chinese process logs.
+                argv=[str(python),'-I','-X','utf8','-u',str(script)]
                 timeout=max(1,min(180,int(arguments.get('timeoutSeconds',90))))
             log('本机执行：'+('安装科研依赖 '+', '.join(packages)+' · 来源 '+source if packages else name)+' · 工作目录 '+cwd.relative_to(self.root).as_posix())
             before = {path: (path.stat().st_size, path.stat().st_mtime_ns)
                       for path in cwd.rglob('*') if path.is_file() and not path.is_symlink()}
+            if context.get('record_execution_started'):
+                context['record_execution_started']({'tool': name, 'status': 'running', 'nodeId': node['id'],
+                    'nodeVersion': node.get('version', 1), 'round': context.get('round', 1), 'createdAt': started,
+                    'workingDirectory': cwd.relative_to(self.root).as_posix(),
+                    'script': script.relative_to(self.root).as_posix() if script.is_file() else None,
+                    'stdoutPath': (run / 'stdout.txt').relative_to(self.root).as_posix(),
+                    'stderrPath': (run / 'stderr.txt').relative_to(self.root).as_posix(),
+                    'dashboardBefore': before.get(cwd / 'research-dashboard.json')})
             result=self._process(argv,cwd,run,timeout,log,cancelled)
             artifacts=[]
             for path in sorted(cwd.rglob('*')):

@@ -31,12 +31,14 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def export_bundle(state: dict, artifact_root: Path) -> bytes:
+def export_bundle(state: dict, artifact_root: Path, allow_draft=False) -> bytes:
     report = state.get('report', {})
-    if not report.get('approved') and not report.get('ready'):
+    if not allow_draft and not report.get('approved') and not report.get('ready'):
         raise ValueError('请先完成最终输出确认，再导出研究结果')
     project = state.get('project', {})
     decision = '用户已确认本轮输出。确认表示用户决策记录，不等同外部科学验证。' if report.get('approved') else '本轮执行已结束。以下区分已取得证据、实测结果与尚未验证的候选；报告可导出不代表所有研究验收项已完成。'
+    if not report.get('ready') and not report.get('approved'):
+        decision = '研究进行中的草稿快照。节点、实验和论文章节可能尚未完成；不代表研究已结束或通过验收。'
     lines = ['# ' + project.get('title', '科研结果'), '', f'研究轮次：{project.get("round", 1)}', f'运行模式：{"已有数据核验" if project.get("mode") == "evidence" else "模型科研运行"}', '', decision, '', report.get('summary', ''), '', '## 结论与证据', '']
     evidence = {e['id']: e for e in state.get('evidence', [])}
     papers = {p['id']: p for p in state.get('papers', [])}
@@ -416,7 +418,7 @@ def main():
     parser.add_argument('--source', type=Path, default=DEFAULT_SOURCE)
     parser.add_argument('--state-dir', type=Path, default=APP_ROOT / '.research-state')
     parser.add_argument('--port', type=int, default=4381)
-    parser.add_argument('--workers', type=int, default=3)
+    parser.add_argument('--workers', type=int, default=8)
     args = parser.parse_args()
     from .workspace import WorkspaceApplication
     app = WorkspaceApplication(args.source, args.state_dir, max_workers=max(1, min(args.workers, 8)))
