@@ -16,9 +16,9 @@ if errorlevel 1 (
   )
 )
 if not exist "dist\index.html" (
-  call npm.cmd ci
+  call pnpm.cmd install --frozen-lockfile
   if errorlevel 1 exit /b 1
-  call npm.cmd run build
+  call pnpm.cmd run build
   if errorlevel 1 exit /b 1
 )
 start "" "http://127.0.0.1:4381"

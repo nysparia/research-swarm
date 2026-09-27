@@ -401,7 +401,7 @@ def make_handler(app):
                     return
                 file = root / 'index.html'
             if not file.is_file():
-                self.send_data(503, b'Frontend not built. Run npm.cmd install && npm.cmd run build.', 'text/plain; charset=utf-8')
+                self.send_data(503, b'Frontend not built. Run pnpm install && pnpm run build.', 'text/plain; charset=utf-8')
                 return
             content_type = mimetypes.guess_type(file.name)[0] or 'application/octet-stream'
             if file.suffix in ('.js', '.mjs'):

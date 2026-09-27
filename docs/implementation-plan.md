@@ -23,6 +23,6 @@ Spec: design.md。共享数据与函数约定见 contract.md。
 
 - [ ] 数据适配：library.py；读取现有库的论文、树、关联、评分、证据，拒绝未知定位。tests/test_library.py 使用临时库并核对真实只读导入。
 - [ ] 调度与持久化：engine.py/store.py；先测试四个检查点、子任务聚合、干预影响、回滚、版本和重启，再实现。python -m unittest discover -s tests。
-- [ ] Semi UI：frontend/；依照 contract.md 实现六页面、全局状态、抽屉、检查点和干预预览；npm run build 验证。
+- [ ] Semi UI：frontend/；依照 contract.md 实现六页面、全局状态、抽屉、检查点和干预预览；pnpm run build 验证。
 - [ ] 工具和模型：runner.py/providers.py；真实资料核验、严格 JSON 模型输出、证据校验、清晰失败、受限实验工具；先写风险边界测试。
 - [ ] HTTP 和交付：server.py、启动脚本、README；本机 API、SSE、导出、设置。浏览器验证实际操作，记录未验证能力，打包源码与运行说明。

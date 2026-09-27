@@ -18,9 +18,9 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw 'PDF 读取依赖安装失败' }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'dist\index.html'))) {
-    & npm.cmd ci
+    & pnpm.cmd install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw '依赖安装失败' }
-    & npm.cmd run build
+    & pnpm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw '界面构建失败' }
 }
 $env:PYTHONIOENCODING = 'utf-8'

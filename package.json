@@ -2,6 +2,10 @@
   "name": "research-swarm",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.33.2",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

@@ -1,1 +1,4 @@
 pypdf==6.19.0
+# Optional ASGI support (uvicorn + FastAPI). Uncommented per request.
+fastapi==0.100.0
+uvicorn[standard]==0.22.0

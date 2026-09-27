@@ -1,0 +1,18 @@
+[project]
+name = "your-project"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pypdf==6.19.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi==0.100.0",
+    "uvicorn[standard]==0.22.0",
+]
+
+[dependency-groups]
+dev = [
+    "pip>=26.2.1",
+]

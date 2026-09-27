@@ -48,8 +48,8 @@ DeepSeek 结构化调用启用 [官方 JSON 输出模式](https://api-docs.deeps
 
 ```powershell
 python -m pip install -r requirements.txt
-npm.cmd ci
-npm.cmd run build
+pnpm install
+pnpm run build
 python -X utf8 -m unittest discover -s tests -v
 node --test frontend/tests/*.test.mjs
 python -X utf8 -m research_swarm --port 4381
@@ -57,6 +57,6 @@ python -X utf8 -m research_swarm --port 4381
 
 隔离运行可加 `--state-dir "其他状态目录"`，更换资料源可加 `--source "其他ai-access目录"`。服务只监听 127.0.0.1，前端与 API 同源。React / [Ant Design](https://ant.design/) / DOM + SVG 二维层级图；Python 专用科研调度器。没有通用 DSH agent，研究策略与工具执行职责分开。
 
-源码仓库包含 `dist/` 预构建界面。修改前端后运行 `npm.cmd run build`，将源码和对应构建结果一并提交。运行数据、API Key、论文、数据库与依赖目录均由 `.gitignore` 排除。
+源码仓库包含 `dist/` 预构建界面。修改前端后运行 `pnpm run build`，将源码和对应构建结果一并提交。运行数据、API Key、论文、数据库与依赖目录均由 `.gitignore` 排除。
 
 最新交互约定见 `docs/conversation-contract.md`，验收记录见 `docs/acceptance.md`。旧六页设计文档保留为历史，不代表当前用户流程。
