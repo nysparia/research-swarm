@@ -4,29 +4,41 @@
   "private": true,
   "packageManager": "pnpm@10.33.2",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "lint": "eslint .",
+    "format": "prettier frontend/src vite.config.ts eslint.config.mjs .prettierrc package.json --write",
+    "format:check": "prettier frontend/src vite.config.ts eslint.config.mjs .prettierrc package.json --check",
     "test:frontend": "node --test frontend/tests/*.test.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@ant-design/icons": "^6.3.4",
     "3d-force-graph": "^1.80.0",
+    "@ant-design/icons": "^6.3.4",
     "antd": "^6.6.5",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.9",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.70.1",
     "vite": "^6.3.5"
   }
 }

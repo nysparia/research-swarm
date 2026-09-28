@@ -1,0 +1,6 @@
+dist
+node_modules
+.research-state
+docs/*.html
+docs/*.json
+docs/*.png
