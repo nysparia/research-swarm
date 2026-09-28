@@ -9,7 +9,10 @@ export interface PositionedNode extends VisualNode {
 }
 
 /** Manual world coordinates stay fixed even when new branches rearrange the automatic layout. */
-export function applyManualNodePositions<T extends PositionedNode>(nodes: readonly T[], positions: Readonly<Record<string, { x: number; y: number }>>): T[] {
+export function applyManualNodePositions<T extends PositionedNode>(
+  nodes: readonly T[],
+  positions: Readonly<Record<string, { x: number; y: number }>>,
+): T[] {
   return nodes.map(node => {
     const position = positions[node.id];
     return position ? { ...node, x: position.x, y: position.y } : node;
@@ -23,7 +26,10 @@ const LAYER_GAP = 72;
 const MARGIN = 32;
 
 /** A stable forest layout; only the returned card coordinates change, never graph relationships. */
-export function layoutResearchGraph(nodes: VisualNode[], links: VisualLink[]): { nodes: PositionedNode[]; width: number; height: number } {
+export function layoutResearchGraph(
+  nodes: VisualNode[],
+  links: VisualLink[],
+): { nodes: PositionedNode[]; width: number; height: number } {
   if (!nodes.length) return { nodes: [], width: 0, height: 0 };
 
   const indices = nodes.map((_, index) => index);
@@ -35,7 +41,7 @@ export function layoutResearchGraph(nodes: VisualNode[], links: VisualLink[]): {
     return nodes[a].id < nodes[b].id ? -1 : nodes[a].id > nodes[b].id ? 1 : a - b;
   };
   const ordered = [...indices].sort(compare);
-  const endpoint = (value: VisualLink['source']) => typeof value === 'string' ? value : value.id;
+  const endpoint = (value: VisualLink['source']) => (typeof value === 'string' ? value : value.id);
   const inferredParents = new Map<number, number[]>();
   for (const link of links) {
     if (link.type !== 'decompose' && link.type !== 'facet') continue;
@@ -95,7 +101,9 @@ export function layoutResearchGraph(nodes: VisualNode[], links: VisualLink[]): {
   for (let order = traversal.length - 1; order >= 0; order--) {
     const index = traversal[order];
     if (children[index].length) {
-      const width = children[index].reduce((total, child) => total + subtreeWidths[child], 0) + SIBLING_GAP * (children[index].length - 1);
+      const width =
+        children[index].reduce((total, child) => total + subtreeWidths[child], 0) +
+        SIBLING_GAP * (children[index].length - 1);
       subtreeWidths[index] = Math.max(CARD_WIDTH, width);
     }
   }

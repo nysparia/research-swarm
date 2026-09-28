@@ -4,10 +4,16 @@ export interface GraphView {
   scale: number;
 }
 
-interface Point { x: number; y: number }
-interface Size { width: number; height: number }
+interface Point {
+  x: number;
+  y: number;
+}
+interface Size {
+  width: number;
+  height: number;
+}
 
-const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
+const finite = (value: number, fallback: number) => (Number.isFinite(value) ? value : fallback);
 
 function usableView(view: GraphView): GraphView {
   return {
@@ -32,15 +38,23 @@ export function zoomGraphView(view: GraphView, factor: number, anchor: Point): G
 }
 
 export function fitGraphView(bounds: Size, viewport: Size): GraphView {
-  const validSize = (size: Size) => Number.isFinite(size.width) && size.width > 0
-    && Number.isFinite(size.height) && size.height > 0;
+  const validSize = (size: Size) =>
+    Number.isFinite(size.width) &&
+    size.width > 0 &&
+    Number.isFinite(size.height) &&
+    size.height > 0;
   if (!validSize(viewport)) return { x: 0, y: 0, scale: 1 };
   if (!validSize(bounds)) return { x: viewport.width / 2, y: viewport.height / 2, scale: 1 };
   const paddingX = Math.min(20, viewport.width / 4);
   const paddingY = Math.min(20, viewport.height / 4);
-  const scale = Math.max(Number.MIN_VALUE, Math.min(1,
-    (viewport.width - paddingX * 2) / bounds.width,
-    (viewport.height - paddingY * 2) / bounds.height));
+  const scale = Math.max(
+    Number.MIN_VALUE,
+    Math.min(
+      1,
+      (viewport.width - paddingX * 2) / bounds.width,
+      (viewport.height - paddingY * 2) / bounds.height,
+    ),
+  );
   return {
     x: (viewport.width - bounds.width * scale) / 2,
     y: (viewport.height - bounds.height * scale) / 2,

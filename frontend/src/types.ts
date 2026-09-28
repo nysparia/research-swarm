@@ -28,7 +28,13 @@ export interface Claim {
   limitations?: string;
 }
 export interface ResearchNode {
-  error?: { code?: string; message: string; at?: string; phase?: string; retryable?: boolean } | null;
+  error?: {
+    code?: string;
+    message: string;
+    at?: string;
+    phase?: string;
+    retryable?: boolean;
+  } | null;
   id: string;
   parentId: string | null;
   title: string;
@@ -38,7 +44,14 @@ export interface ResearchNode {
   status: NodeStatus;
   progress: number;
   input: Record<string, unknown>;
-  output: { summary?: string; evidenceIds?: string[]; claims?: Claim[]; unresolved?: string[]; structured?: Record<string, unknown>; [key: string]: unknown } | null;
+  output: {
+    summary?: string;
+    evidenceIds?: string[];
+    claims?: Claim[];
+    unresolved?: string[];
+    structured?: Record<string, unknown>;
+    [key: string]: unknown;
+  } | null;
   logs: Activity[];
   sourceNodeId: string | null;
   requirementIds: string[];
@@ -103,24 +116,56 @@ export interface Checkpoint {
 }
 export interface Snapshot {
   revision: number;
-  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm' };
+  project: {
+    id: string;
+    title: string;
+    description: string;
+    round: number;
+    sourcePath: string;
+    mode: 'evidence' | 'llm';
+  };
   stage: number;
   paused: boolean;
   status: 'idle' | 'running' | 'waiting_user' | 'failed' | 'completed';
   requirements: Requirement[];
   nodes: ResearchNode[];
-  edges: { source: string; target: string; type: 'decompose' | 'return' | 'compare'; reason: string }[];
+  edges: {
+    source: string;
+    target: string;
+    type: 'decompose' | 'return' | 'compare';
+    reason: string;
+  }[];
   papers: Paper[];
   facetNodes: FacetNode[];
   evidence: Evidence[];
   checkpoints: Checkpoint[];
   activeCheckpointId: string | null;
   activities: Activity[];
-  report: { summary: string; claims: Claim[]; unresolved: string[]; approved: boolean; ready?: boolean; structured?: Record<string, unknown> };
+  report: {
+    summary: string;
+    claims: Claim[];
+    unresolved: string[];
+    approved: boolean;
+    ready?: boolean;
+    structured?: Record<string, unknown>;
+  };
   history: Record<string, unknown>[];
-  operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string }[];
+  operations?: {
+    id: string;
+    type: string;
+    nodeId?: string;
+    message: string;
+    status: 'running' | 'completed' | 'failed';
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+  }[];
 }
-export interface Impact { revision: number; affectedIds: string[]; downstreamCount: number }
+export interface Impact {
+  revision: number;
+  affectedIds: string[];
+  downstreamCount: number;
+}
 export interface Settings {
   mode: 'evidence' | 'llm';
   provider: { type: string; baseUrl: string; model: string; hasKey: boolean };

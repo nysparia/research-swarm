@@ -16,3 +16,5 @@ config.local.json
 *.log
 .DS_Store
 work/
+# Generated frontend build output.
+dist/
