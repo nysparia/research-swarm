@@ -258,12 +258,13 @@ class LocalResearchTools:
                     'dashboardBefore': before.get(cwd / 'research-dashboard.json')})
             result=self._process(argv,cwd,run,timeout,log,cancelled)
             artifacts=[]
+            resolved_cwd = cwd.resolve()
             for path in sorted(cwd.rglob('*')):
                 if result['status']=='cancelled': break  # Finish cancellation receipt promptly.
                 relative_parts = path.relative_to(cwd).parts
                 if relative_parts[:2] == ('pip', 'cache') or any(part in ('.cache', '__pycache__') or part.startswith('pip-') for part in relative_parts):
                     continue
-                if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(cwd) or '__pycache__' in path.parts:
+                if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(resolved_cwd) or '__pycache__' in path.parts:
                     continue
                 if before.get(path) == (path.stat().st_size, path.stat().st_mtime_ns): continue
                 if path.stat().st_size>50*1024*1024 or len(artifacts)>=30: continue

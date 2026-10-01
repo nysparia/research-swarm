@@ -74,7 +74,7 @@ def _json_object(path: Path) -> dict:
 
 def _absolute(root: Path, value) -> Path:
     path = Path(str(value))
-    return (path if path.is_absolute() else root / path).resolve()
+    return Path(os.path.abspath(path if path.is_absolute() else root / path))
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -89,7 +89,7 @@ class Library:
     """Adapter for a source project directory, task directory, or SQLite file."""
 
     def __init__(self, source: str | Path):
-        self.source = Path(source).expanduser().resolve()
+        self.source = Path(source).expanduser().absolute()
         self._retrieve_lock = threading.Lock()
 
     def _layout(self) -> dict:
@@ -131,10 +131,10 @@ class Library:
             configured_topic = min(topics, key=lambda t: _number(t.get("priority"), 99))
         roots = []
         if task:
-            roots.append((task / "papers").resolve())
+            roots.append(task / "papers")
         if is_db and not task:
             local_root = db.parent.parent if db.parent.name == "data" else db.parent
-            roots.append((local_root / "papers").resolve())
+            roots.append(local_root / "papers")
         roots.append(_absolute(root, storage.get("pdf_dir") or "papers"))
         return {"root": root, "db": db, "activeDb": active_db, "task": task,
                 "meta": meta, "configuredTopic": configured_topic,
