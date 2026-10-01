@@ -193,7 +193,7 @@ def _done(engine, node, output):
                     step=node['input']['researchStep'], evidenceIds=output['evidenceIds'])
 
 
-def _hypotheses(engine, items):
+def _hypotheses(engine, items, origin=None):
     cycle = engine._state['project']['researchCycle']; root = engine._get_node('central')
     added = 0
     for item in items:
@@ -201,11 +201,21 @@ def _hypotheses(engine, items):
         if any(h['signature'] == signature for h in cycle['hypotheses']):
             continue
         hypothesis_id = 'hypothesis-' + signature
+        from .claim_runtime import bind_hypothesis
+        parent_claim = (origin or {}).get('input', {}).get('originClaimId')
+        claim = bind_hypothesis(engine, item, hypothesis_id, [parent_claim] if parent_claim else None)
         topic_nodes = [n['id'] for n in engine._children('central') if n['input'].get('researchStep') == 'topic']
-        node = _spawn(engine, root, 'hypothesis', item['statement'], {'hypothesisId': hypothesis_id, 'hypothesis': item, 'dependsOn': topic_nodes})
+        node = _spawn(engine, root, 'hypothesis', item['statement'], {'hypothesisId': hypothesis_id,
+            'claimId': claim['id'], 'claimVersion': claim['version'], 'hypothesis': item, 'dependsOn': topic_nodes})
         if node is None:
             cycle['unresolved'].append('任务预算不足，猜想尚未验证：' + item['statement']); continue
+        if claim.get('ownerNodeId') and claim['ownerNodeId'] != node['id']:
+            claim.setdefault('ownerHistory', []).append({'nodeId': claim['ownerNodeId'],
+                'version': claim['version'], 'at': engine._cycle_now()})
+        claim['ownerNodeId'] = node['id']
+        node['role'] = '主张研究负责人'
         cycle['hypotheses'].append({**copy.deepcopy(item), 'id': hypothesis_id, 'signature': signature,
+                                   'claimId': claim['id'], 'claimVersion': claim['version'],
                                    'nodeId': node['id'], 'status': 'awaiting_evidence', 'verdict': None,
                                    'iteration': cycle['iteration'], 'dataRequestIds': []})
         added += 1
@@ -351,7 +361,7 @@ def accept(engine, node, output, token):
         key = {'background': 'background', 'literature': 'literatureReview', 'topic': 'researchTopic'}[step]
         cycle['topic' if step == 'topic' else key] = copy.deepcopy(structured[key])
     elif step == 'hypothesis_generation':
-        if _hypotheses(engine, structured['hypotheses']):
+        if _hypotheses(engine, structured['hypotheses'], node):
             if node['id'] == 'central': return True
             _done(engine, node, output); return True
         _block(output, '没有可执行的新猜想；需要重新界定课题或增加研究资源。')
@@ -374,6 +384,10 @@ def accept(engine, node, output, token):
         demand['status'] = 'blocked'; _block(output, '数据来源节点预算不足。')
     elif step == 'data_source' and phase != 'aggregate':
         assessment = structured['dataAssessment']
+        if engine._state['project'].get('taskMode') == 'reproduction' and assessment['sufficient']:
+            approved = engine._state['project'].get('researchEvidenceApprovals', {})
+            if not assessment['evidenceIds'] or any(eid not in approved for eid in assessment['evidenceIds']):
+                assessment.update(sufficient=False, evidenceIds=[], reason='论文报告值只能作为复现目标；当前课题还需实际执行并复核复现实验。')
         if assessment['sufficient'] and not _existing_sources(engine, assessment['evidenceIds'], node['input']['dataDemand']):
             assessment.update(sufficient=False, evidenceIds=[], reason='当前引用缺少有效的来源或实验复核，需取得可核验数据。')
         if assessment['sufficient']:
@@ -485,7 +499,7 @@ def accept(engine, node, output, token):
         budget_exhausted = bool((new or revisions) and cycle['iteration'] >= engine._limit('maxIterations'))
         if (new or revisions) and cycle['iteration'] < engine._limit('maxIterations'):
             cycle['iteration'] += 1
-            added = _hypotheses(engine, new) if new else 0
+            added = _hypotheses(engine, new, node) if new else 0
             for revision in revisions:
                 h = next(h for h in cycle['hypotheses'] if h['id'] == revision['hypothesisId'])
                 target = engine._get_node(h['nodeId'])
@@ -572,7 +586,8 @@ def invalidate(engine, affected):
 def insert(engine, origin, payload):
     root = engine._get_node('central')
     data = {key: copy.deepcopy(payload[key]) for key in ('allowNewSearch', 'searchBudgetId', 'retrieval', 'paperIds') if key in payload}
-    data.update(originNodeId=origin['id'], originResult=copy.deepcopy(origin.get('output')), userInstruction=payload['text'])
+    data.update(originNodeId=origin['id'], originClaimId=origin['input'].get('claimId'),
+                originResult=copy.deepcopy(origin.get('output')), userInstruction=payload['text'])
     if not _spawn(engine, root, 'hypothesis_generation', '按用户指定方向深化研究：' + payload['text'], data):
         engine._state['project']['researchCycle']['unresolved'].append('新增方向因资源不足尚未执行：' + payload['text'])
 

@@ -35,6 +35,8 @@ def validate_result(value: dict, library: dict) -> dict:
 
     result['evidenceIds'] = evidence_ids(value.get('evidenceIds', []))
     validate_structured_result(result['structured'], valid_ids)
+    from .claim_runtime import validate_relations
+    validate_relations(result['structured'].get('evidenceRelations', []), valid_ids)
     if not isinstance(value.get('claims', []), list):
         raise ValueError('候选判断必须为列表')
     for claim in value.get('claims', [])[:30]:
@@ -47,6 +49,9 @@ def validate_result(value: dict, library: dict) -> dict:
         normalized = {'id': str(claim.get('id') or 'claim-' + uuid.uuid4().hex[:12]), 'text': claim['text'][:10000], 'evidenceIds': ids, 'status': 'candidate', 'limitations': limitations[:5000]}
         if isinstance(claim.get('nodeId'), str) and claim['nodeId']:
             normalized['nodeId'] = claim['nodeId']
+        if isinstance(claim.get('claimId'), str):
+            normalized['claimId'] = claim['claimId']
+            normalized['claimVersion'] = claim.get('claimVersion')
         result['claims'].append(normalized)
         result['evidenceIds'].extend(i for i in ids if i not in result['evidenceIds'])
     source_ids = {n['id'] for n in library.get('facetNodes', [])}
@@ -257,6 +262,14 @@ class ResearchRunner:
         inputs = {'phase': node.get('phase'), 'iteration': context.get('iteration', 1), 'maxIterations': context.get('maxIterations', 3), 'node': {k: v for k, v in node.items() if k not in ('logs', 'output')}, 'requirements': context.get('requirements', []), 'childrenResults': [{k: c.get(k) for k in ('id', 'title', 'output')} for c in context.get('children', [])], 'library': {'papers': [{k: p.get(k) for k in ('id', 'title', 'abstract', 'score', 'codeUrl', 'pdfAvailable', 'facetNodeIds', 'evidenceIds')} for p in papers], 'facetNodes': library.get('facetNodes', []), 'evidence': evidence}}
         inputs['remainingDepth'] = context.get('remainingDepth', 4)
         inputs['remainingTasks'] = context.get('remainingTasks', 80)
+        inputs['taskMode'] = context.get('taskMode', 'research')
+        inputs['claim'] = context.get('claim')
+        graph = context.get('claimGraph', {})
+        inputs['claimGraph'] = {'claims': [{key: copy.deepcopy(claim.get(key)) for key in
+            ('id', 'statement', 'scope', 'falsification', 'version', 'ownerNodeId', 'parentClaimIds', 'assessment')}
+            for claim in graph.get('claims', []) if not claim.get('archived')],
+            'relations': [relation for relation in graph.get('relations', []) if context.get('claim') and
+                          relation['claimId'] == context['claim']['id'] and relation['claimVersion'] == context['claim']['version']]}
         inputs['library']['catalog'] = [{'id':p['id'],'title':p['title']} for p in library.get('papers', [])[:100]]
         inputs['library']['fullTextReads'] = materials
         system = '''你是计算机科研协作工具中的专业节点，只处理本次节点需求。用户拥有最终研究判断。返回严格 JSON，不要 Markdown 或长篇隐藏推理。给出简明可审查的判断依据、证据与不确定性。
@@ -280,6 +293,11 @@ class ResearchRunner:
         if context.get('workflow') == 'autonomous':
             system += '\n当前为自主科研，不存在要求用户逐篇读论文或筛选推荐的固定步骤。你负责资料阅读和结果解释，面向用户直接给出清晰结果。仅中央节点 aggregate 阶段可依据明确证据缺口通过 followups 追加具体研究任务（结构同 children，最多4个）；iteration 达到 maxIterations 时必须总结成果和剩余局限，不能继续派发。不是每次都要追加，已有材料足够或缺少外部实验资源时直接输出。科学判断仍为可审查候选，不自行声称得到用户确认。'
         inputs['researchChoices'] = context.get('researchChoices', [])
+        system += '''\n研究的持久单元是 claim；paper、数据集和执行凭据都是 evidence 的来源材料。claim 是当前任务所属主张及其版本；执行节点只为它取证，不能改写主张或替负责人下结论。claimGraph 是已存在的主张和证据关系，引用其原始 ID，不能编造版本。
+需要描述证据关系时在 structured.evidenceRelations 返回 [{"claimId":"输入中的主张ID","claimVersion":1,"evidenceId":"实际证据ID","type":"support 或 qualify","polarity":"for/against/mixed/unresolved","reason":"为什么该证据支持、反对或细化主张","applicability":"条件与范围","quality":"usable/limited/unusable"}]。只有负责本主张的节点可给研究判断；底层节点给局部观察和证据。反例用 support+against，条件限制用 qualify+unresolved，不能删去反例、失败记录或方向不明的材料。论文题名/摘要相关、脚本执行完成、重复引用同一来源都不能充当多个独立验证。
+表达层围绕已有主张组织论文。summary 明确区分主张内容与它得到的判断；被反驳的主张不能写成成立。claims 引用已有 claimId/claimVersion，无证据的想法进入 hypotheses 或 unresolved。用户确认前任何研究判断都是可审查候选。'''
+        if context.get('taskMode') == 'reproduction':
+            system += '''\n当前任务为论文复现：先定位用户指定论文并读取目标主张的实际证据位置，将论文报告的指标、数据划分、版本、硬件/预算、容差与必要条件写入猜想 scope/reason/falsification。论文报告值是待复现目标，不是本机复现成功的证据。找不到指定论文或缺少关键条件时给出具体缺口和研究取舍，不得随便换论文宣称复现。实验须重建原协议或明确记录偏离，实际执行后区分成功复现、条件不同、无法复现。hypotheses 每项附 reproductionTarget:{paperId:"实际论文ID",evidenceIds:["报告值证据"],metric:"目标指标",expected:"论文报告值及单位，未知须注明",tolerance:"预先确定容差",conditions:"数据/实现/环境条件"}；复现报告保留差异与失败。'''
         research_step = node.get('input', {}).get('researchStep') if context.get('researchCycle') else None
         if research_step:
             from .research_cycle_prompts import prompt_for

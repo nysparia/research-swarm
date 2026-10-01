@@ -389,5 +389,17 @@
 .deep-search-option .ant-checkbox-label{font-size:13px;color:#595959}
 .query-option>.ant-input{margin-top:10px}
 .node-action-kind{width:180px}
+.task-mode-choice{display:flex;align-items:center;gap:14px;margin:0 3px 18px;color:#475569;font-size:14px}
+.task-mode-choice>span{font-weight:600}
+.claim-detail{font-size:14px;line-height:1.6}
+.claim-detail .claim-statement{font-size:16px;font-weight:600;color:#26374d}
+.claim-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0}
+.claim-fields>div,.claim-relation{padding:12px 14px;border:1px solid #e5eaf0;border-radius:7px;background:#fbfcfe}
+.claim-fields strong{color:#566780}.claim-fields p{margin:6px 0 0;overflow-wrap:anywhere}
+.claim-relation{margin:10px 0}.claim-relation>p{margin:8px 0}
+.claim-relation .task-evidence-list{margin-top:10px}.claim-version{border-top:1px solid #edf0f4;padding:10px 0}.claim-version p{margin:5px 0}
+.report-claim-reference{display:block;text-align:left;margin:6px 0;font-size:13px}.report-assessment{display:block;font-size:13px;color:#566780;margin:4px 0}
+.claim-edit-fields{display:grid;gap:12px;margin:14px 0}.claim-edit-fields label{display:grid;gap:5px;font-size:13px;color:#596779}
+@media(max-width:640px){.claim-fields{grid-template-columns:1fr}.task-mode-choice{align-items:flex-start;flex-direction:column;gap:8px}}
 .settings-intro{color:#595959}
 @media(max-width:760px){.task-drawer .ant-drawer-content-wrapper{max-width:calc(100vw - 10px)}.sidebar-bottom .ant-btn{min-width:42px}.document-toolbar .ant-btn{font-size:11px}.task-list-item>div>span{display:none}.graph-toolbar>div:first-child>span{font-size:11px}}

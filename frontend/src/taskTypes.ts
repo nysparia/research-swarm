@@ -7,6 +7,7 @@ export interface Message { id: string; role: 'user' | 'assistant' | 'system'; co
 export interface RunSummary { round: number; at: string; summary: string; mode: string }
 export interface TaskDetail {
   task: TaskSummary;
+  taskMode?: 'research' | 'reproduction';
   phase: TaskPhase;
   document: ResearchDocument;
   messages: Message[];

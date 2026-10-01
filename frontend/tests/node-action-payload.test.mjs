@@ -31,3 +31,10 @@ test('deepening applies only the query and search permission explicitly included
   assert.equal(request.body.expectedRevision, 42);
   assert.equal(isNodeImpactCurrent(review(value), { ...value, allowNewSearch: false }, 42), false);
 });
+
+test('claim actions carry reviewed claim identity and optional scientific fields', () => {
+  const value = { ...draft, claimId: 'c1', scope: 'Adults', falsification: 'No difference' };
+  const request = nodeActionRequest(value, review(value), 42);
+  assert.deepEqual(request.body, { nodeId: 'node-a', claimId: 'c1', kind: 'modify', text: '新的需求', scope: 'Adults', falsification: 'No difference', expectedRevision: 42 });
+  assert.equal(isNodeImpactCurrent(review(value), { ...value, scope: 'Children' }, 42), false);
+});

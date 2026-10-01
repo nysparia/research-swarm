@@ -41,6 +41,7 @@ class WorkspaceApplication:
                 continue
             try:
                 record = json.loads(path.read_text(encoding='utf-8'))
+                record.setdefault('taskMode', 'research')
                 if record['id'] != path.parent.name:
                     continue
                 if record['phase'] in ('retrieving', 'researching') or record['document']['polishing']:
@@ -89,6 +90,7 @@ class WorkspaceApplication:
     def _create(self, title='新科研任务', imported=False):
         task_id = identity()
         record = {'id': task_id, 'title': title[:80], 'phase': 'empty', 'createdAt': utc_now(), 'updatedAt': utc_now(),
+                  'taskMode': 'research',
                   'round': 1, 'imported': imported, 'needsRetrieval': True, 'token': 0, 'error': None, 'messages': [], 'runs': [],
                   'document': {'markdown': '', 'revision': 0, 'polishing': False, 'polishedFrom': None, 'source': 'local', 'questions': [], 'error': None},
                   'documentHistory': [], 'compiled': None}
@@ -170,6 +172,8 @@ class WorkspaceApplication:
                 artifacts = [{'name': '研究报告与数据.zip', 'kind': 'archive', 'url': f'/api/tasks/{task_id}/export'},
                              {'name': '需求文档.md', 'kind': 'requirements', 'url': f'/api/tasks/{task_id}/document'}]
             if state:
+                from .claims import ensure_graph
+                ensure_graph(state)
                 seen = set()
                 root = (self._data_root / task_id / 'runtime').resolve()
                 executions = [entry['execution'] for entry in state.get('history', []) if entry.get('type') == 'tool-executed']
@@ -186,6 +190,7 @@ class WorkspaceApplication:
                             artifacts.append({'name': item.get('name') or path.name, 'kind': 'experiment',
                                               'url': f'/api/tasks/{task_id}/artifacts/{relative}'})
             return copy.deepcopy({'task': self._summary(record), 'phase': record['phase'], 'document': record['document'],
+                                  'taskMode': record.get('taskMode', 'research'),
                                   'messages': record['messages'], 'state': state, 'error': record['error'], 'artifacts': artifacts,
                                   'runs': record['runs'], 'modelReady': self.settings.public()['capabilities']['modelReady']})
 
@@ -236,7 +241,9 @@ class WorkspaceApplication:
         try:
             state = self.detail(task_id).get('state')
             previous_report = (state or {}).get('report')
-            result = self._draft(text, previous, editing, previous_report)
+            with self._lock:
+                task_mode = self._record(task_id).get('taskMode', 'research')
+            result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
             with self._lock:
                 record = self._record(task_id)
                 if self._closed or record['token'] != token or record['document']['revision'] != revision:
@@ -312,7 +319,7 @@ class WorkspaceApplication:
                     if state['project'].get('researchStarted') or state['report'].get('ready') or record['runs']:
                         app.engine.command('next-round', {})
                     mode = 'llm' if self.settings.public()['capabilities']['modelReady'] else 'evidence'
-                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm'})
+                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm', 'taskMode': record.get('taskMode', 'research')})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']
@@ -431,6 +438,18 @@ class WorkspaceApplication:
             self._record(task_id)
         if action in ('messages', 'document'):
             return self._edit(task_id, payload, action == 'document')
+        if action == 'task-mode':
+            with self._lock:
+                record = self._record(task_id)
+                mode = payload.get('taskMode')
+                if mode not in ('research', 'reproduction'):
+                    raise ValueError('请选择开展科研或论文复现')
+                if record['phase'] not in ('empty', 'requirements') or record['document']['polishing']:
+                    raise ValueError('请在需求整理完成、开始研究之前选择任务类型')
+                record['taskMode'] = mode
+                self._message(record, 'user', '任务类型：' + ('论文复现' if mode == 'reproduction' else '开展科研'))
+                self._save(record)
+                return self.detail(task_id)
         if action == 'start':
             with self._lock:
                 record = self._record(task_id)
@@ -450,7 +469,7 @@ class WorkspaceApplication:
                 return self.detail(task_id)
         if action.startswith('actions/') or action == 'deepen':
             operation = action.removeprefix('actions/')
-            if operation not in ('pause', 'resume', 'retry', 'impact', 'intervene', 'deepen', 'rollback'):
+            if operation not in ('pause', 'resume', 'retry', 'impact', 'intervene', 'deepen', 'rollback', 'claim-decision'):
                 raise ValueError('当前对话流程不支持此操作')
             with self._lock:
                 record = self._record(task_id)
@@ -470,7 +489,7 @@ class WorkspaceApplication:
                         record['token'] += 1
                         record['phase'] = 'requirements'
                         self._message(record, 'assistant', '已停止后续研究调度。进行中的论文请求结束后只保留资料。', 'progress')
-                    elif operation != 'pause':
+                    elif operation not in ('pause', 'claim-decision'):
                         record['phase'], record['error'] = 'researching', None
                     self._save(record)
                     return self.detail(task_id)
@@ -507,7 +526,10 @@ class WorkspaceApplication:
             path = self._data_root / task_id / 'reports' / f'round-{index}.json'
             if not path.is_file():
                 raise ValueError('研究历史不存在')
-            return 200, json.loads(path.read_text(encoding='utf-8')), 'application/json', None
+            historical = json.loads(path.read_text(encoding='utf-8'))
+            from .claims import ensure_graph
+            ensure_graph(historical)
+            return 200, historical, 'application/json', None
         if action == 'export':
             state = detail['state']
             if detail['phase'] != 'completed' or not state or not state['report'].get('ready', state['report'].get('approved')):

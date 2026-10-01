@@ -23,10 +23,26 @@ export interface Claim {
   id: string;
   text: string;
   evidenceIds: string[];
+  claimId?: string;
+  claimVersion?: number;
+  assessmentStatus?: CanonicalClaim['assessment']['status'];
   nodeId?: string;
   status: 'candidate' | 'confirmed' | 'rejected';
   limitations?: string;
 }
+export interface CanonicalClaimVersion { version: number; statement: string; scope: string; falsification: string; actor: string; reason: string; at?: string; createdAt?: string }
+export interface CanonicalClaim {
+  id: string; statement: string; scope: string; falsification: string; ownerNodeId: string | null;
+  parentClaimIds: string[]; version: number; versions: CanonicalClaimVersion[];
+  origin?: { kind?: string; nodeId?: string; evidenceIds?: string[] };
+  assessment: { status: 'unassessed' | 'supported' | 'refuted' | 'mixed' | 'inconclusive'; reason?: string; evidenceIds?: string[]; limitations?: string; confirmedByUser?: boolean };
+  createdAt?: string; updatedAt?: string;
+  archived?: boolean;
+  decisions?: { actor: string; decision: string; version: number; reason?: string; at?: string }[];
+}
+export interface ClaimRelation { id: string; claimId: string; claimVersion: number; evidenceId: string; type: 'support' | 'qualify'; polarity: 'for' | 'against' | 'mixed' | 'unresolved'; reason?: string; applicability?: string; quality?: 'usable' | 'limited' | 'unusable'; sourceGroup?: string; createdAt?: string }
+export interface ClaimExpression { id: string; kind: 'paper' | 'reproduction_report'; title: string; markdown: string; claimRefs: { claimId: string; version: number }[]; status: 'draft' | 'confirmed'; createdAt?: string }
+export interface ClaimGraph { schemaVersion: number; claims: CanonicalClaim[]; relations: ClaimRelation[]; expressions: ClaimExpression[]; materials: Record<string, unknown>[] }
 export interface ResearchNode {
   error?: { code?: string; message: string; at?: string; phase?: string; retryable?: boolean } | null;
   id: string;
@@ -103,7 +119,7 @@ export interface Checkpoint {
 }
 export interface Snapshot {
   revision: number;
-  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm' };
+  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; taskMode?: 'research' | 'reproduction' };
   stage: number;
   paused: boolean;
   status: 'idle' | 'running' | 'waiting_user' | 'failed' | 'completed';
@@ -116,7 +132,8 @@ export interface Snapshot {
   checkpoints: Checkpoint[];
   activeCheckpointId: string | null;
   activities: Activity[];
-  report: { summary: string; claims: Claim[]; unresolved: string[]; approved: boolean; ready?: boolean; structured?: Record<string, unknown> };
+  report: { summary: string; claims: Claim[]; expressionId?: string; claimRefs?: { claimId: string; version: number }[]; unresolved: string[]; approved: boolean; ready?: boolean; structured?: Record<string, unknown> };
+  claimGraph?: ClaimGraph;
   history: Record<string, unknown>[];
   operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string }[];
 }

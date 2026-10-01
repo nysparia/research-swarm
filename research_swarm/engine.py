@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from .store import Store
+from .claims import ensure_graph, get_claim, preserve_history
 
 
 def _now():
@@ -204,7 +205,7 @@ class Engine:
             if self._closed:
                 raise ValueError("研究引擎已关闭")
             if action == "impact":
-                node = self._get_node(payload.get("nodeId"))
+                node = self._action_node(payload)
                 kind = self._kind(payload.get("kind"))
                 affected = self._affected(node["id"], kind)
                 return {"revision": self._state["revision"], "affectedIds": affected,
@@ -218,6 +219,7 @@ class Engine:
                 "start-autonomous": self._start_autonomous,
                 "research-choice": self._research_choice,
                 "paper-context": self._paper_context,
+                "claim-decision": self._claim_decision,
             }
             if action not in methods:
                 raise ValueError("不支持的操作: " + str(action))
@@ -241,6 +243,34 @@ class Engine:
                 raise
             self._condition.notify_all()
             return self.snapshot()
+
+    def _action_node(self, payload):
+        if payload.get('claimId'):
+            claim = get_claim(self._state, payload['claimId'])
+            if claim.get('archived') or not claim.get('ownerNodeId'):
+                raise ValueError('该主张属于历史记录；请从当前研究节点发起新的取证任务')
+            if payload.get('nodeId') and payload['nodeId'] != claim['ownerNodeId']:
+                raise ValueError('主张与操作节点不匹配')
+            return self._get_node(claim['ownerNodeId'])
+        return self._get_node(payload.get('nodeId'))
+
+    def _claim_decision(self, payload):
+        if payload.get('expectedRevision') != self._state['revision']:
+            raise ValueError('状态版本已变化，请重新查看主张再确认')
+        claim = get_claim(self._state, payload.get('claimId'))
+        if claim.get('archived') or payload.get('decision') != 'confirm':
+            raise ValueError('只能确认当前主张；修改或否决请先预览影响范围')
+        if claim['assessment']['status'] == 'unassessed':
+            raise ValueError('主张尚未论证，不能确认研究判断')
+        claim['assessment']['confirmedByUser'] = True
+        decision = {'actor': 'user', 'decision': 'confirm', 'version': claim['version'],
+                    'reason': _text(payload.get('note')), 'at': _now()}
+        claim.setdefault('decisions', []).append(decision)
+        for row in self._state['report']['claims']:
+            if row.get('claimId') == claim['id'] and row.get('claimVersion') == claim['version']:
+                row['status'] = 'confirmed'
+        self._history('claim-decision', claimId=claim['id'], **decision)
+        self._activity('user', '已确认主张判断：' + claim['statement'])
 
     def close(self):
         with self._condition:
@@ -301,6 +331,7 @@ class Engine:
             state["status"] = "running"
 
     def _commit(self):
+        ensure_graph(self._state)
         self._state["revision"] += 1
         self._refresh_status()
         self._refresh_paper_statuses()
@@ -397,6 +428,9 @@ class Engine:
         mode = payload.get("mode", self._state["project"]["mode"])
         if mode not in ("evidence", "llm"):
             raise ValueError("执行模式无效")
+        task_mode = payload.get('taskMode', self._state['project'].get('taskMode', 'research'))
+        if task_mode not in ('research', 'reproduction'):
+            raise ValueError('科研任务类型必须为 research 或 reproduction')
         allow_search = payload.get("allowNewSearch", True)
         if not isinstance(allow_search, bool):
             raise ValueError("补充检索设置必须是布尔值")
@@ -404,6 +438,7 @@ class Engine:
             raise ValueError("研究任务名称不能为空")
         self._stop_running("开始自主研究")
         self._state["project"].update(workflow="autonomous", mode=mode, researchStarted=True, researchIteration=1)
+        self._state['project']['taskMode'] = task_mode
         self._state['project']['paperResearch'] = bool(payload.get('paperResearch'))
         self._state['project']['paperContext'] = copy.deepcopy(payload.get('paperContext') or {})
         if payload.get('budgetTier') is not None:
@@ -416,6 +451,7 @@ class Engine:
         if "title" in payload:
             self._state["project"]["title"] = _text(payload["title"])
         self._state["requirements"] = requirements
+        self._state['project']['description'] = '；'.join(item['description'] for item in requirements)
         self._state["report"] = self._empty_report()
         root = self._get_node("central")
         root["input"] = {key: "；".join(item[key] for item in requirements)
@@ -640,6 +676,8 @@ class Engine:
         return "central"
 
     def _invalidate(self, node_ids, cause, *, supersede_decision=False):
+        from .claim_runtime import invalidate_claims
+        invalidate_claims(self._state, set(node_ids), cause)
         decision = self._state['project'].get('researchDecision')
         if supersede_decision and decision and decision.get('nodeId') in node_ids:
             self._history('research-decision-superseded', decision=copy.deepcopy(decision), reason=cause)
@@ -677,11 +715,13 @@ class Engine:
     def _intervene(self, payload):
         if payload.get("expectedRevision") != self._state["revision"]:
             raise ValueError("状态版本已变化，请重新查看影响预览后提交")
-        node = self._get_node(payload.get("nodeId"))
+        node = self._action_node(payload)
         kind = self._kind(payload.get("kind"))
         text = _text(payload.get("text"))
         if not text:
             raise ValueError("请填写干预原因或新的任务描述")
+        from .claim_runtime import claim_intervention
+        claim_intervention(self, node, dict(payload, text=text))
         affected = self._affected(node["id"], kind)
         if payload.get("library") is not None:
             self._merge_library(payload["library"])
@@ -831,6 +871,7 @@ class Engine:
         self._manual_paused = False
         restored["report"]["approved"] = False
         restored["report"]["ready"] = False
+        preserve_history(restored, current)
         self._state = restored
         if self._autonomous():
             self._state["activeCheckpointId"] = None
@@ -876,10 +917,13 @@ class Engine:
 
     def _next_round(self, payload):
         self._stop_running("开始下一轮")
+        for claim in self._state['claimGraph']['claims']:
+            claim['archived'] = True
         self._state['project']['researchDecision'] = None
         self._manual_paused = False
         self._history("round-complete", report=copy.deepcopy(self._state["report"]),
                       requirements=copy.deepcopy(self._state["requirements"]))
+        self._state['project'].pop('researchCycle', None)
         for checkpoint in self._state["checkpoints"]:
             if checkpoint["status"] == "pending":
                 checkpoint["status"] = "superseded"
@@ -890,6 +934,9 @@ class Engine:
         retained = []
         for node in self._state["nodes"]:
             if node["id"] != "central" and not node["id"].startswith("facet:"):
+                node['active'] = False
+                node['input']['superseded'] = True
+                retained.append(node)
                 continue
             node["version"] += 1
             node.update(status="pending", progress=0, output=None, evidenceIds=[],
@@ -1017,7 +1064,7 @@ class Engine:
                              and not node["active"] and node["id"] != parent["id"]), None)
             input_data = copy.deepcopy(child)
             nested = input_data.pop("children", [])
-            for key in ("allowNewSearch", "searchBudgetId"):
+            for key in ("allowNewSearch", "searchBudgetId", "claimId", "claimVersion"):
                 if key not in input_data and key in parent["input"]:
                     input_data[key] = copy.deepcopy(parent["input"][key])
             input_data["parentDemand"] = copy.deepcopy(parent["input"])
@@ -1107,12 +1154,15 @@ class Engine:
             context['paperContext'] = copy.deepcopy(self._state['project'].get('paperContext', {}))
             context['researchChoices'] = copy.deepcopy(self._state['project'].get('researchChoices', []))
             context['researchCycle'] = copy.deepcopy(self._state['project'].get('researchCycle'))
+            context['taskMode'] = self._state['project'].get('taskMode', 'research')
+            context['claimGraph'] = copy.deepcopy(self._state['claimGraph'])
+            context['claim'] = copy.deepcopy(get_claim(self._state, node['input']['claimId'])) if node['input'].get('claimId') else None
             context['upstreamResults'] = [copy.deepcopy(self._get_node(i)) for i in dependencies]
             if self._state['project'].get('researchCycle'):
                 self._state['project']['researchCycle']['stage'] = node['input'].get('researchStep', 'synthesis')
             token["input"] = copy.deepcopy(node["input"])
             token["context"] = {key: copy.deepcopy(context[key])
-                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth", "remainingTasks", "paperResearch", "paperContext", "researchChoices", "researchCycle", "upstreamResults")}
+                                for key in ("requirements", "children", "mode", "round", "ancestors", "workflow", "iteration", "maxIterations", "remainingDepth", "remainingTasks", "paperResearch", "paperContext", "researchChoices", "researchCycle", "upstreamResults", "taskMode", "claim")}
             return copy.deepcopy(node), context, token
         return None
 
@@ -1149,6 +1199,14 @@ class Engine:
             if valid:
                 known = {item['id'] for item in self._state['evidence']}
                 self._state['evidence'].extend(item for item in evidence if item['id'] not in known)
+                claim_id = token.get('input', {}).get('claimId')
+                if claim_id:
+                    from .claims import add_relation
+                    for item in evidence:
+                        add_relation(self._state, claim_id, item['id'],
+                            reason='本机工具执行记录：' + str(result.get('status')) + '；仍需实验设计者审查',
+                            quality='limited' if result.get('status') == 'completed' else 'unusable',
+                            claim_version=token['input']['claimVersion'])
             self._commit()
 
     def _record_artifact_read(self, token, result):
@@ -1289,6 +1347,8 @@ class Engine:
         result["evidenceIds"] = _unique(result.get("evidenceIds", []))
         from .research_contracts import validate_structured_result
         validate_structured_result(result.get('structured', {}), known)
+        from .claim_runtime import validate_relations
+        validate_relations(result.get('structured', {}).get('evidenceRelations', []), known)
         if set(result["evidenceIds"]) - known:
             raise ValueError("研究结果引用了未知证据 ID")
         claims = []
@@ -1361,16 +1421,24 @@ class Engine:
         if self._state['project'].get('researchCycle') and node['input'].get('researchStep'):
             from .research_cycle import validate_output
             validate_output(node['input']['researchStep'], node['phase'], result['structured'], known, node['input'].get('hypothesisId'))
+            if self._state['project'].get('taskMode') == 'reproduction':
+                from .claim_runtime import validate_reproduction
+                validate_reproduction(result['structured'].get('hypotheses', []), self._state['evidence'])
             if any(not c['evidenceIds'] for c in result['claims']):
                 raise ValueError('研究论断必须带来源；未验证的想法放在猜想或未决项中')
             if result.get('children') or result.get('followups'):
                 raise ValueError('研究阶段任务由证据循环调度，不得跳过数据索求或实验复核环节')
             if node['input']['researchStep'] == 'topic' and self._state['project'].get('paperResearch') and not result['structured'].get('researchDecision'):
                 topic = result['structured']['researchTopic']
+                options = [
+                    {'label': '先验证现有方案与边界', 'effect': '围绕现有方法、强基线和适用条件提出可证伪猜想。'},
+                    {'label': '优先探索新的方法机制', 'effect': '围绕研究缺口提出候选新机制，与现有方法进行可证伪比较。'}]
+                if self._state['project'].get('taskMode') == 'reproduction':
+                    options = [
+                        {'label': '优先严格复现原设置', 'effect': '保留论文指标、数据划分与实验设置；资源不满足时明确报告缺口。'},
+                        {'label': '允许按本机资源缩小规模', 'effect': '记录对原设置的全部偏离，有限规模结果不等同原实验复现。'}]
                 result['structured']['researchDecision'] = {'question': '课题「' + topic['title'] + '」先侧重哪一点？',
-                    'rationale': topic['rationale'], 'options': [
-                        {'label': '先验证现有方案与边界', 'effect': '围绕现有方法、强基线和适用条件提出可证伪猜想。'},
-                        {'label': '优先探索新的方法机制', 'effect': '围绕研究缺口提出候选新机制，与现有方法进行可证伪比较。'}]}
+                    'rationale': topic['rationale'], 'options': options}
         return result
 
     def _accept(self, token, output):
@@ -1411,6 +1479,10 @@ class Engine:
             self._activity('AI', decision_message(decision), self._get_node('central'))
         from .research_cycle import accept
         if accept(self, node, output, token):
+            from .claim_runtime import output_relations, report_from_claims
+            output_relations(self._state, node, output, token['phase'])
+            if node['id'] == 'central' and node['status'] == 'completed':
+                report_from_claims(self._state)
             node['evidenceIds'] = list(output['evidenceIds'])
             self._new_outputs[-1]['output'] = copy.deepcopy(output)
             return
@@ -1465,6 +1537,8 @@ class Engine:
                                      "unresolved": copy.deepcopy(output["unresolved"]),
                                      "structured": copy.deepcopy(output["structured"]),
                                      "approved": False, "ready": self._autonomous()}
+            from .claim_runtime import report_from_claims
+            report_from_claims(self._state)
             if self._state['project'].get('researchDecision'):
                 self._state['report']['ready'] = False
                 self._state['stage'] = 6

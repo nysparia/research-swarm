@@ -34,6 +34,18 @@ if os.name=="nt":
   _fields_=[("length",ctypes.c_ulong),("load",ctypes.c_ulong)]+[(n,ctypes.c_ulonglong) for n in ("totalPhysical","availablePhysical","totalPage","availablePage","totalVirtual","availableVirtual","extended")]
  m=Memory();m.length=ctypes.sizeof(m)
  if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):data["physicalMemoryBytes"]=m.totalPhysical
+elif platform.system()=="Linux":
+ try:
+  pages,page_size=os.sysconf("SC_PHYS_PAGES"),os.sysconf("SC_PAGE_SIZE")
+  if pages>0 and page_size>0:data["physicalMemoryBytes"]=pages*page_size
+ except (AttributeError,OSError,ValueError):pass
+ try:
+  with open("/proc/cpuinfo",encoding="utf-8",errors="replace") as info:
+   for line in info:
+    name,separator,value=line.partition(":")
+    if separator and name.strip().lower() in ("model name","hardware") and value.strip():
+     data["cpu"]=value.strip();break
+ except OSError:pass
 for name in ("numpy","scipy","scikit-learn","onnx","onnxruntime","skl2onnx","torch","psutil"):
  try:data["packages"][name]=importlib.metadata.version(name)
  except importlib.metadata.PackageNotFoundError:data["packages"][name]=None
@@ -55,15 +67,27 @@ class LocalResearchTools:
         home, temporary = self.root/'tool-home', self.root/'temporary'
         home.mkdir(parents=True, exist_ok=True)
         temporary.mkdir(parents=True, exist_ok=True)
-        env = {key: value for key, value in os.environ.items()
-               if key.upper() in {'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE'}}
-        system = Path(os.environ.get('SYSTEMROOT', '/'))
-        env.update(PATH=os.pathsep.join((str(Path(sys.executable).parent), str(system/'System32'), str(system))),
+        plotting = home/'matplotlib'
+        plotting.mkdir(parents=True, exist_ok=True)
+        isolated = self.root/'python-env'/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+        interpreter = self.python or (isolated if isolated.is_file() else Path(sys.executable))
+        paths = [str(interpreter.parent)]
+        if os.name == 'nt':
+            env = {key: value for key, value in os.environ.items()
+                   if key.upper() in {'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE'}}
+            system = Path(os.environ.get('SYSTEMROOT', '/'))
+            paths.extend((str(system/'System32'), str(system)))
+        else:
+            env = {}
+            # Standard interpreter and OS directories only; never reuse parent PATH.
+            paths.extend(path for path in os.defpath.split(os.pathsep) if path and Path(path).is_absolute())
+        env.update(PATH=os.pathsep.join(dict.fromkeys(paths)),
                    PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1',
                    PYTHONNOUSERSITE='1', PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_CONFIG_FILE=os.devnull,
                    PIP_CACHE_DIR=str(self.root/'pip-cache'), UV_HTTP_TIMEOUT='30', UV_HTTP_RETRIES='1',
                    OMP_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2', MKL_NUM_THREADS='2',
-                   HOME=str(home), USERPROFILE=str(home), TEMP=str(temporary), TMP=str(temporary))
+                   HOME=str(home), USERPROFILE=str(home), TEMP=str(temporary), TMP=str(temporary), TMPDIR=str(temporary),
+                   MPLBACKEND='Agg', MPLCONFIGDIR=str(plotting))
         return env
 
     def _ensure_python(self, log, cancelled):

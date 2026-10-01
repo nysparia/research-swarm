@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import os
+import signal
 import threading
 import time
 import urllib.parse
@@ -32,6 +33,9 @@ def utc_now():
 
 
 def export_bundle(state: dict, artifact_root: Path) -> bytes:
+    state = copy.deepcopy(state)
+    from .claims import ensure_graph
+    graph = ensure_graph(state)
     report = state.get('report', {})
     if not report.get('approved') and not report.get('ready'):
         raise ValueError('请先完成最终输出确认，再导出研究结果')
@@ -42,6 +46,11 @@ def export_bundle(state: dict, artifact_root: Path) -> bytes:
     papers = {p['id']: p for p in state.get('papers', [])}
     for claim in report.get('claims', []):
         lines.extend(['### ' + claim.get('text', ''), '', f'状态：{claim.get("status", "candidate")}', ''])
+        if claim.get('claimId'):
+            lines.extend([f"主张：{claim['claimId']} · 版本 {claim.get('claimVersion', '?')} · 判断 {claim.get('assessmentStatus', 'unassessed')}", ''])
+            for relation in graph['relations']:
+                if relation['claimId'] == claim['claimId'] and relation['claimVersion'] == claim.get('claimVersion'):
+                    lines.append(f"- 证据关系 {relation['type']} / {relation['polarity']} · {relation['evidenceId']}：{relation['reason']}")
         ids = claim.get('evidenceIds', [])
         if not ids:
             lines.extend(['**无证据**：此项不能作为已验证结论。', ''])
@@ -60,6 +69,12 @@ def export_bundle(state: dict, artifact_root: Path) -> bytes:
         archive.writestr('report.md', '\n'.join(lines).encode('utf-8'))
         archive.writestr('research-data.json', json.dumps(state, ensure_ascii=False, indent=2).encode('utf-8'))
         archive.writestr('evidence.json', json.dumps(state.get('evidence', []), ensure_ascii=False, indent=2).encode('utf-8'))
+        archive.writestr('claim-graph.json', json.dumps(graph, ensure_ascii=False, indent=2).encode('utf-8'))
+        archive.writestr('materials.json', json.dumps(graph['materials'], ensure_ascii=False, indent=2).encode('utf-8'))
+        expression = next((e for e in graph['expressions'] if e['id'] == report.get('expressionId')), None)
+        if expression:
+            archive.writestr('reproduction-report.md' if expression['kind'] == 'reproduction_report' else 'paper.md',
+                             expression['markdown'].encode('utf-8'))
         archive.writestr('activity.json', json.dumps(state.get('activities', []), ensure_ascii=False, indent=2).encode('utf-8'))
         archive.writestr('execution-history.json', json.dumps(state.get('executionHistory', []), ensure_ascii=False, indent=2).encode('utf-8'))
         artifact_root = Path(artifact_root).resolve()
@@ -227,7 +242,14 @@ class ResearchApplication:
             state = self.engine.snapshot()
             if payload.get('expectedRevision') != state['revision']:
                 raise ValueError('状态已变化，请重新预览影响范围后确认')
-            node = next((n for n in state['nodes'] if n['id'] == payload.get('nodeId')), None)
+            node_id = payload.get('nodeId')
+            if payload.get('claimId'):
+                from .claims import get_claim
+                claim = get_claim(state, payload['claimId'])
+                if node_id and node_id != claim.get('ownerNodeId'):
+                    raise ValueError('主张与操作节点不匹配')
+                node_id = claim.get('ownerNodeId')
+            node = next((n for n in state['nodes'] if n['id'] == node_id), None)
             if not node:
                 raise ValueError('节点不存在')
             if not str(payload.get('text', '')).strip():
@@ -401,7 +423,7 @@ def make_handler(app):
                     return
                 file = root / 'index.html'
             if not file.is_file():
-                self.send_data(503, b'Frontend not built. Run npm.cmd install && npm.cmd run build.', 'text/plain; charset=utf-8')
+                self.send_data(503, b'Frontend not built. Run npm ci && npm run build.', 'text/plain; charset=utf-8')
                 return
             content_type = mimetypes.guess_type(file.name)[0] or 'application/octet-stream'
             if file.suffix in ('.js', '.mjs'):
@@ -422,14 +444,29 @@ def main():
     app = WorkspaceApplication(args.source, args.state_dir, max_workers=max(1, min(args.workers, 8)))
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(app))
     server.daemon_threads = True
-    print(f'科研蜂群：http://127.0.0.1:{args.port}  |  source={args.source}', flush=True)
+    previous_terminate_handler = None
+    terminate_requested = False
+
+    def terminate_service(signum, frame):
+        nonlocal terminate_requested
+        if not terminate_requested:
+            terminate_requested = True
+            raise KeyboardInterrupt
+
+    if os.name == 'posix' and threading.current_thread() is threading.main_thread():
+        previous_terminate_handler = signal.signal(signal.SIGTERM, terminate_service)
+    print(f'科研蜂群：http://127.0.0.1:{server.server_port}  |  source={args.source}', flush=True)
     try:
         server.serve_forever(poll_interval=.25)
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
-        app.close()
+        try:
+            server.server_close()
+            app.close()
+        finally:
+            if previous_terminate_handler is not None:
+                signal.signal(signal.SIGTERM, previous_terminate_handler)
 
 
 if __name__ == '__main__':

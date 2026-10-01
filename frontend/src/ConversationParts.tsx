@@ -55,6 +55,7 @@ export function ResultView({ detail, tab, onTab, onPaper, onNode, onExport }: { 
   const state = detail.state;
   const assessment = researchAssessment(state);
   const proposals: unknown[] = Array.isArray(state?.report.structured?.proposals) ? state.report.structured.proposals : [];
+  const expression = state?.claimGraph?.expressions.find(item => item.id === state.report.expressionId);
   const items: TabsProps['items'] = [
     {
       key: 'report',
@@ -62,12 +63,15 @@ export function ResultView({ detail, tab, onTab, onPaper, onNode, onExport }: { 
       children: <article className="research-report">
         {assessment.incomplete && <Alert type="warning" showIcon title="本轮已结束，研究尚未完成验收" description={<BlurText text={`${assessment.description}。下方保留已取得的结果与具体缺口。`} />} />}
         <div className="result-summary"><Markdown text={state?.report.summary || '本轮已结束，尚无报告摘要。'} /></div>
+        {expression && <p className="result-provenance">{expression.kind === 'reproduction_report' ? '复现报告' : '研究表达'} · {expression.status === 'confirmed' ? '已确认' : '草稿'} · 引用 {expression.claimRefs.length} 个主张版本</p>}
         {proposals.length > 0 && <section className="report-open-questions"><h2>待验证的新方案</h2>{proposals.map((proposal, index) => <div key={index}><Markdown text={typeof proposal === 'string' ? proposal : Object.entries(proposal as Record<string, unknown>).map(([key, value]) => `**${key}**：${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n\n')} /></div>)}</section>}
         {state?.report.claims.map((claim, index) => {
           const evidence = state.evidence.filter(item => claim.evidenceIds.includes(item.id));
+          const canonical = state.claimGraph?.claims.find(item => item.id === claim.claimId);
+          const stale = Boolean(canonical && claim.claimVersion !== canonical.version);
           return <section className="report-claim" key={claim.id}>
             <div className="claim-number">{String(index + 1).padStart(2, '0')}</div>
-            <div><p>{claim.text}</p>{claim.limitations && <p className="quiet-text">局限：{claim.limitations}</p>}{evidence.length ? <details className="claim-evidence"><summary>{evidence.length} 条可追溯证据</summary><TaskEvidence evidence={evidence} state={state} onPaper={onPaper} /></details> : <span className="unsupported-note">无证据，仍需验证</span>}</div>
+            <div><p>{claim.text}</p>{canonical && <button className="inline-link report-claim-reference" onClick={() => onNode({ id: `claim:${canonical.id}`, title: canonical.statement, status: 'completed', action: canonical.assessment.reason || '', sourceKind: 'claim', claimId: canonical.id, nodeId: canonical.ownerNodeId || undefined, active: !canonical.archived })}>查看主张与证据关系（当前 v{canonical.version}）</button>}{stale && <span className="unsupported-note">此引用属于 v{claim.claimVersion}，不证明当前主张。</span>}{!canonical && claim.claimId && <span className="unsupported-note">主张引用 {claim.claimId} 暂不可读取。</span>}{claim.assessmentStatus && <span className="report-assessment">{({ supported: '有证据支持', refuted: '受到反证', mixed: '证据混合', inconclusive: '尚无定论', unassessed: '尚未评估' } as Record<string, string>)[claim.assessmentStatus]}</span>}{claim.limitations && <p className="quiet-text">局限：{claim.limitations}</p>}{evidence.length ? <details className="claim-evidence"><summary>{evidence.length} 条可追溯证据</summary><TaskEvidence evidence={evidence} state={state} onPaper={onPaper} /></details> : <span className="unsupported-note">无证据，仍需验证</span>}</div>
           </section>;
         })}
         {Boolean(state?.report.unresolved.length) && <section className="report-open-questions"><h2>未解决的问题</h2><ul>{state!.report.unresolved.map((question, index) => <li key={index}>{question}</li>)}</ul></section>}

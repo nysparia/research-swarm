@@ -530,7 +530,11 @@ class EngineTests(unittest.TestCase):
         self.runner.block = gate
         self.start()
         self.assertTrue(self.runner.entered.wait(2))
-        state = self.wait(lambda state: sum(node["status"] == "running" for node in state["nodes"]) == 2)
+        # A planning node can overlap the first worker. Wait for both evidence
+        # workers before testing that intervention preserves the sibling's run.
+        state = self.wait(lambda state: sum(
+            node["status"] == "running" and node["kind"] == "evidence"
+            and node["phase"] == "execute" for node in state["nodes"]) == 2)
         beta = next(node for node in state["nodes"] if node["sourceNodeId"] == "20" and node["kind"] == "evidence")
         impact = self.engine.command("impact", {"nodeId": "facet:10", "kind": "modify"})
         self.engine.command("intervene", {"nodeId": "facet:10", "kind": "modify", "text": "核对甲的新约束",
