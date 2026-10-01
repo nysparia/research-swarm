@@ -160,15 +160,17 @@ class LocalResearchTools:
         if name not in self.names or not isinstance(arguments,dict):
             raise ValueError('本机科研工具或参数无效')
         if name=='artifact_read':
-            path=(self.root/str(arguments.get('path',''))).resolve()
-            if not path.is_relative_to(self.root/'runs') or not path.is_file() or path.is_symlink():
+            requested = self.root / str(arguments.get('path', ''))
+            path = requested.resolve()
+            resolved_root = self.root.resolve()
+            if not path.is_relative_to(resolved_root/'runs') or not path.is_file() or path.is_symlink():
                 raise ValueError('只能读取本课题 runs 内的实验产物')
             large = path.stat().st_size > 256*1024
             if large and (not arguments.get('preview') or path.suffix not in ('.csv', '.json') or path.stat().st_size > 4*1024*1024):
                 raise ValueError('文本产物超过 256 KiB；CSV/JSON 可用 preview=true 读取校验摘要，最多 4 MiB')
             content = path.read_bytes()
             text = content.decode('utf-8-sig')
-            result = {'path':path.relative_to(self.root).as_posix(),'text':text, 'sha256':hashlib.sha256(content).hexdigest(), 'bytes':len(content)}
+            result = {'path':requested.relative_to(self.root).as_posix(),'text':text, 'sha256':hashlib.sha256(content).hexdigest(), 'bytes':len(content)}
             if large and path.suffix == '.csv':
                 reader = csv.DictReader(io.StringIO(text)); rows = list(reader)
                 result.update(preview=True, rowCount=len(rows), columns=reader.fieldnames,
