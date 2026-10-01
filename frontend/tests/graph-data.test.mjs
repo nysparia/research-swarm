@@ -1,24 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildGraphData, mergeGraphNodes, mergeGraphLinkReasons } from '../src/graphData.ts';
+import { buildGraphData } from '../src/graphData.ts';
 
-test('polling refreshes relationship evidence without replacing simulated endpoints', () => {
-  const source = { id: 'central', x: 23, fx: 23 }, target = { id: 'child', x: 46 };
-  const link = { source, target, type: 'decompose', reason: '旧判断' };
-  mergeGraphLinkReasons([link], [{ source: 'central', target: 'child', type: 'decompose', reason: '新证据要求追加对照' }]);
-  assert.equal(link.reason, '新证据要求追加对照');
-  assert.equal(link.source, source);
-  assert.equal(link.target, target);
-  assert.equal(source.fx, 23);
-});
-
-test('polling keeps distinct reasons for parallel evidence relations', () => {
-  const current = [{ id: 'r1', source: 'e1', target: 'c1', type: 'evidence-qualify', reason: '旧限制 A' }, { id: 'r2', source: 'e1', target: 'c1', type: 'evidence-qualify', reason: '旧限制 B' }];
-  mergeGraphLinkReasons(current, [{ ...current[0], reason: '新限制 A' }, { ...current[1], reason: '新限制 B' }]);
-  assert.deepEqual(current.map(link => link.reason), ['新限制 A', '新限制 B']);
-});
-
-test('3D graph contains actual agents, missing facet nodes and their hierarchy without invented nodes', () => {
+test('2D graph contains actual agents, missing facet nodes and their hierarchy without invented nodes', () => {
   const graph = buildGraphData({
     nodes: [{ id: 'central', title: '总 agent', status: 'running', phase: 'plan', logs: [{ message: '检索中' }], sourceNodeId: null, active: true, parentId: null }, { id: 'agent-1', title: '方法分析', status: 'pending', phase: 'execute', logs: [], sourceNodeId: '1', active: false, parentId: 'central' }],
     edges: [{ source: 'central', target: 'agent-1', type: 'decompose', reason: '研究分工' }],
@@ -106,12 +90,15 @@ test('shared owner and central remain visible; qualifying and unresolved evidenc
   ]);
 });
 
-test('polling changes status while keeping simulated and manually dragged node positions', () => {
-  const oldNode = { id: 'agent-1', title: '方法分析', status: 'pending', x: 65, y: -12, z: 37, fx: 65, fy: -12, fz: 37 };
-  const incoming = [{ id: 'agent-1', title: '方法分析', status: 'completed', action: '已有可追溯输出' }, { id: 'agent-2', title: '新分支', status: 'pending' }];
-  const merged = mergeGraphNodes(incoming, new Map([[oldNode.id, oldNode]]));
-  assert.equal(merged[0], oldNode);
-  assert.equal(merged[0].status, 'completed');
-  assert.deepEqual([merged[0].x, merged[0].y, merged[0].z, merged[0].fx, merged[0].fy, merged[0].fz], [65, -12, 37, 65, -12, 37]);
-  assert.equal(merged[1].id, 'agent-2');
+test('polling recomputes node state and relationship reasons from the current snapshot', () => {
+  const state = { nodes: [{ id: 'central', title: '总 agent', status: 'running', logs: [], active: true, parentId: null }, { id: 'child', title: '方法分析', status: 'pending', logs: [], active: true, parentId: 'central' }], edges: [{ source: 'central', target: 'child', type: 'decompose', reason: '旧判断' }], facetNodes: [] };
+  const before = buildGraphData(state);
+  state.nodes[1].status = 'completed';
+  state.nodes[1].logs = [{ message: '已有可追溯输出' }];
+  state.edges[0].reason = '新证据要求追加对照';
+  const current = buildGraphData(state);
+  assert.equal(before.nodes[1].status, 'pending');
+  assert.equal(current.nodes[1].status, 'completed');
+  assert.equal(current.nodes[1].action, '已有可追溯输出');
+  assert.equal(current.links[0].reason, '新证据要求追加对照');
 });

@@ -6,6 +6,7 @@ from citations, source counts, or an execution's success.
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -176,7 +177,7 @@ def create_claim(state, statement, scope='', falsification='', origin=None,
     if any(not any(c['id'] == p for c in graph['claims']) for p in parents):
         raise ValueError('Unknown parent claim')
     at = _now()
-    version = {'version': 1, 'statement': statement.strip(), 'scope': scope or '',
+    version = {'version': 1, 'statement': _statement_text(statement), 'scope': scope or '',
         'falsification': falsification or '', 'actor': actor, 'reason': '', 'at': at}
     claim = {'id': claim_id, 'statement': version['statement'], 'scope': version['scope'],
         'falsification': version['falsification'], 'origin': copy.deepcopy(origin or {'kind': 'user'}),
@@ -187,6 +188,41 @@ def create_claim(state, statement, scope='', falsification='', origin=None,
     return claim
 
 
+def _has_literal_layout(statement):
+    """Avoid treating quoted data, code, or line layout as ordinary prose."""
+    return (any(marker in statement for marker in ('"', "'", '`', '“', '”', '‘', '’',
+                                                    '「', '」', '『', '』', '\n', '\r', '~~~')) or
+            statement.startswith(('    ', '\t')) or
+            bool(re.search(r'<(?:code|pre)\b', statement, flags=re.IGNORECASE)))
+
+
+def _statement_text(statement):
+    # Stripping a code block's first indentation or outer line boundaries is a
+    # content change. Only ordinary, single-line prose may lose padding here.
+    return statement if _has_literal_layout(statement) else statement.strip()
+
+
+def _editorial_statement(statement):
+    """Normalize only formatting that cannot alter ordinary claim wording.
+
+    Word boundaries and line boundaries remain significant. Internal punctuation,
+    signs, case, question/exclamation marks (including factorials), ellipses and a
+    period after a number are intentionally not normalized. This is a narrow
+    editorial allowance, not a model's assertion that two paraphrases mean the
+    same thing. Quoted/code text and multiline layout must match byte for byte.
+    """
+    if _has_literal_layout(statement):
+        return statement
+    text = re.sub(r'[ \t]+', ' ', statement.strip())
+    body = text[:-1].rstrip(' \t')
+    if body and text[-1] == '。' and body[-1] not in '.。':
+        return body
+    if (body and text[-1] == '.' and
+            (body[-1].isalpha() or body[-1] in ')]）】')):
+        return body
+    return text
+
+
 def revise_claim(state, claim_id, statement, scope=None, falsification=None,
                  actor='user', reason='', reproduction_target=_UNCHANGED):
     claim = get_claim(state, claim_id)
@@ -194,12 +230,30 @@ def revise_claim(state, claim_id, statement, scope=None, falsification=None,
         raise ValueError('Archived claim cannot be revised')
     if not isinstance(statement, str) or not statement.strip():
         raise ValueError('Claim statement is required')
+    statement = _statement_text(statement)
+    revised_scope = claim['scope'] if scope is None else scope
+    revised_falsification = claim['falsification'] if falsification is None else falsification
+    previous_target = claim.get('reproductionTarget', claim.get('origin', {}).get('reproductionTarget'))
+    target_unchanged = reproduction_target is _UNCHANGED or reproduction_target == previous_target
+    if (revised_scope == claim['scope'] and revised_falsification == claim['falsification'] and
+            target_unchanged and _editorial_statement(statement) == _editorial_statement(claim['statement'])):
+        if statement != claim['statement']:
+            at = _now()
+            claim.setdefault('editorialEdits', []).append({
+                'id': _id('editorial'), 'version': claim['version'],
+                'before': claim['statement'], 'after': statement,
+                'actor': actor, 'reason': reason, 'at': at})
+            claim['statement'] = statement
+            claim['updatedAt'] = at
+        # Exact version records, evidence, decisions and scientific assessment
+        # remain valid; the append-only editorial audit records display changes.
+        return claim
     at = _now()
     claim.setdefault('assessmentHistory', []).append(copy.deepcopy(claim['assessment']))
     claim['version'] = max(v['version'] for v in claim['versions']) + 1
-    claim['statement'] = statement.strip()
-    claim['scope'] = claim['scope'] if scope is None else scope
-    claim['falsification'] = claim['falsification'] if falsification is None else falsification
+    claim['statement'] = statement
+    claim['scope'] = revised_scope
+    claim['falsification'] = revised_falsification
     if reproduction_target is not _UNCHANGED:
         claim['reproductionTarget'] = copy.deepcopy(reproduction_target)
     claim['versions'].append({'version': claim['version'], 'statement': claim['statement'],
@@ -352,7 +406,7 @@ def preserve_history(restored_state, previous_state):
         current['versions'].extend(copy.deepcopy(v) for v in future['versions']
                                    if v['version'] not in known_versions)
         current['versions'].sort(key=lambda v: v['version'])
-        for field in ('assessmentHistory', 'decisions'):
+        for field in ('assessmentHistory', 'decisions', 'editorialEdits'):
             existing = current.setdefault(field, [])
             for entry in future.get(field, []):
                 if entry not in existing:

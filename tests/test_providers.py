@@ -5,11 +5,155 @@ from pathlib import Path
 from unittest.mock import patch
 import io
 import urllib.error
+import os
 
 from research_swarm.providers import Settings, parse_json_object
 
 
 class ProviderTests(unittest.TestCase):
+    def test_legacy_configuration_migrates_only_to_main_and_survives_role_update(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'config.local.json'
+            path.write_text(json.dumps({'mode': 'llm', 'provider': {'type': 'openai', 'baseUrl': 'https://legacy.example/v1',
+                                                                    'model': 'original', 'apiKey': 'legacy-secret'}}))
+            settings = Settings(Path(temp), None)
+            self.assertIs(settings.data['provider'], settings.data['providers']['main'])
+            self.assertEqual(settings.public()['provider']['model'], 'original')
+            self.assertFalse(settings.role_status('judge')['configured'])
+            self.assertEqual(settings.data['providers']['judge']['apiKey'], '')
+            settings.update({'providers': {'judge': {'baseUrl': 'http://localhost:11434/v1', 'model': 'judge-model'}}})
+            restarted = Settings(Path(temp), None)
+            self.assertEqual(restarted.data['provider']['apiKey'], 'legacy-secret')
+            self.assertEqual(restarted.role_status('judge')['model'], 'judge-model')
+            self.assertFalse(restarted.role_status('redteam')['configured'])
+
+    def test_each_role_uses_its_own_endpoint_model_and_secret(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.update({'providers': {role: {'baseUrl': f'https://{role}.example/v1', 'model': role + '-model', 'apiKey': role + '-secret'}
+                                          for role in Settings.ROLES}})
+            requests = []
+            def respond(request, **kwargs):
+                requests.append(request)
+                return io.BytesIO(b'{"choices":[{"message":{"content":"OK"}}]}')
+            with patch('urllib.request.urlopen', side_effect=respond):
+                for role in Settings.ROLES:
+                    self.assertEqual(settings.chat([{'role': 'user', 'content': 'OK'}], role=role), 'OK')
+            for role, request in zip(Settings.ROLES, requests):
+                self.assertEqual(request.full_url, f'https://{role}.example/v1/chat/completions')
+                self.assertEqual(json.loads(request.data)['model'], role + '-model')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer ' + role + '-secret')
+
+    def test_unconfigured_secondary_and_unknown_roles_never_fall_back(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'main-secret'
+            with patch('urllib.request.urlopen') as request:
+                for role in ('judge', 'redteam', 'typo'):
+                    with self.subTest(role=role), self.assertRaises(ValueError):
+                        settings.chat([{'role': 'user', 'content': 'test'}], role=role)
+            request.assert_not_called()
+
+    def test_role_secrets_and_environment_values_are_redacted_together(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'TEST_JUDGE_KEY': 'judge-env-secret', 'TEST_REDTEAM_KEY': 'redteam-env-secret'}):
+            settings = Settings(Path(temp), None)
+            public = settings.update({'providers': {
+                'main': {'apiKey': 'main-secret'},
+                'judge': {'baseUrl': 'https://judge.example/v1', 'model': 'judge', 'apiKeyEnv': 'TEST_JUDGE_KEY'},
+                'redteam': {'baseUrl': 'https://redteam.example/v1', 'model': 'redteam', 'apiKeyEnv': 'TEST_REDTEAM_KEY', 'apiKey': 'redteam-direct-secret'},
+            }})
+            secrets = ('main-secret', 'judge-env-secret', 'redteam-env-secret', 'redteam-direct-secret')
+            redacted = settings.safe_error(Exception(' '.join(secrets)))
+            for secret in secrets:
+                self.assertNotIn(secret, json.dumps(public))
+                self.assertNotIn(secret, redacted)
+            self.assertTrue(all(public['providers'][role]['hasKey'] for role in Settings.ROLES))
+
+    def test_independence_compares_identity_without_claiming_different_vendors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            public = settings.update({'providers': {
+                'main': {'baseUrl': 'http://localhost:11434/v1', 'model': 'same'},
+                'judge': {'baseUrl': 'http://LOCALHOST:11434/v1/', 'model': 'same'},
+                'redteam': {'baseUrl': 'http://localhost:11434/v1', 'model': 'different'},
+            }})
+            self.assertFalse(public['providers']['judge']['independentFromMain'])
+            self.assertTrue(public['providers']['redteam']['independentFromMain'])
+            self.assertFalse(public['capabilities']['independentReviewReady'])
+            public = settings.update({'providers': {'judge': {'model': 'third'}}})
+            self.assertTrue(public['capabilities']['independentReviewReady'])
+            self.assertEqual(public['capabilities']['independenceBasis'], 'configured_endpoint_and_model')
+            self.assertIn('不保证', public['capabilities']['independenceNotice'])
+            public = settings.update({'providers': {'redteam': {'model': 'third'}}})
+            self.assertFalse(public['capabilities']['independentReviewReady'])
+
+    def test_default_port_and_trailing_slash_do_not_create_independence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            public = settings.update({'providers': {
+                'main': {'baseUrl': 'https://same.example/v1', 'model': 'same', 'apiKey': 'a'},
+                'judge': {'baseUrl': 'https://SAME.example:443/v1/', 'model': 'same', 'apiKey': 'b'},
+            }})
+            self.assertFalse(public['providers']['judge']['independentFromMain'])
+            for endpoint in ('http://localhost:11434/v1', 'http://127.0.0.1:11434/v1', 'http://[::1]:11434/v1'):
+                public = settings.update({'providers': {
+                    'main': {'baseUrl': 'http://localhost:11434/v1', 'model': 'same'},
+                    'judge': {'baseUrl': endpoint, 'model': 'same'},
+                }})
+                self.assertFalse(public['providers']['judge']['independentFromMain'])
+
+    def test_public_capabilities_state_actual_execution_scope_without_cost_or_gpu_guarantee(self):
+        with tempfile.TemporaryDirectory() as temp:
+            capability = Settings(Path(temp), None).public()['capabilities']
+            self.assertEqual(capability['reproductionScope'], 'preflight_and_small_experiments')
+            self.assertEqual(capability['executionLimits']['maxTimeoutSeconds'], 180)
+            self.assertEqual(capability['executionLimits']['resume'], 'restart_node')
+            self.assertFalse(capability['executionLimits']['costEstimateAvailable'])
+            self.assertFalse(capability['executionLimits']['gpuConfigured'])
+
+    def test_role_update_preserves_other_secrets_and_explicit_reset_removes_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.update({'providers': {
+                'main': {'apiKey': 'main-secret'},
+                'judge': {'baseUrl': 'https://judge.example/v1', 'model': 'judge', 'apiKey': 'judge-secret'},
+            }})
+            settings.update({'providers': {'judge': {'apiKey': '', 'model': 'updated'}}})
+            self.assertEqual(settings.data['providers']['judge']['apiKey'], 'judge-secret')
+            self.assertEqual(settings.data['provider']['apiKey'], 'main-secret')
+            settings.update({'providers': {'judge': None}})
+            self.assertEqual(settings.data['providers']['judge'], Settings.EMPTY_PROVIDER)
+            self.assertFalse(Settings(Path(temp), None).role_status('judge')['configured'])
+
+    def test_invalid_secondary_update_is_atomic_and_legacy_main_update_is_supported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.update({'provider': {'model': 'legacy-update'}})
+            before = (Path(temp) / 'config.local.json').read_text()
+            with self.assertRaises(ValueError):
+                settings.update({'providers': {'main': {'model': 'uncommitted'},
+                                               'judge': {'baseUrl': 'http://remote.example/v1', 'model': 'judge'}}})
+            self.assertEqual(settings.role_status('main')['model'], 'legacy-update')
+            self.assertEqual((Path(temp) / 'config.local.json').read_text(), before)
+            for invalid in ({'providers': []}, {'providers': {'typo': {}}}, {'providers': {'judge': 'invalid'}}, {'provider': None}):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    settings.update(invalid)
+
+    def test_secondary_json_retry_keeps_role_endpoint_and_credentials(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.update({'providers': {'judge': {'baseUrl': 'http://localhost:11434/v1', 'model': 'judge-model'}}})
+            responses = iter(['invalid', '{"result":"ok"}'])
+            requests = []
+            def respond(request, **kwargs):
+                requests.append(request)
+                return io.BytesIO(json.dumps({'choices': [{'message': {'content': next(responses)}}]}).encode())
+            with patch('urllib.request.urlopen', side_effect=respond):
+                self.assertEqual(parse_json_object(settings.chat([{'role': 'user', 'content': 'judge'}], role='judge', json_mode=True)), {'result': 'ok'})
+            self.assertEqual(len(requests), 2)
+            self.assertTrue(all(r.full_url == 'http://localhost:11434/v1/chat/completions' for r in requests))
+            self.assertTrue(all(json.loads(r.data)['model'] == 'judge-model' for r in requests))
+
     def test_secret_not_returned_and_configuration_survives_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(Path(temp), None)

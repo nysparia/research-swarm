@@ -208,13 +208,14 @@ class WorkspaceApplication:
         else:
             markdown = '# 科研需求\n\n## 研究问题\n\n' + text.strip() + '\n\n## 希望得到的结果\n\n- 总结现有方案、主要差异和适用条件\n- 给出可追溯的证据与局限，区分已知事实和待验证设想\n- 提供下一步研究建议与可执行实验设计\n\n## 约束与验收\n\n- 不编造论文、数据或已完成实验\n- 结果直接面向用户，论文阅读由研究节点承担\n- 没有可比证据时明确说明，不预设优胜方案\n\n## 待明确\n\n- 研究对象、评测数据与可用计算预算有哪些限制？\n'
         headline = re.sub(r'[#*`\n]+', ' ', text).strip()[:42] or '新科研任务'
-        return {'title': headline, 'markdown': markdown, 'summary': '已保存需求草稿。配置 DeepSeek API Key 后，模型会润色需求并主动补充澄清建议；当前为本地文档整理。',
+        return {'title': headline, 'markdown': markdown, 'summary': '已保存需求草稿。当前为本地文档整理；配置并启用模型模式后可使用模型润色，研究内容将发送到所选模型端点。',
                 'questions': ['是否有必须比较的方案、指定数据集或时间/计算预算？'], 'source': 'local',
-                'requirements': [{'id': 'requirement:1', 'description': markdown, 'acceptance': '回答用户研究问题，所有事实有证据位置；明确假设、局限和未决问题。', 'constraints': '不编造论文或实验结果；不要求用户自行阅读论文。'}],
+                'requirements': [{'id': 'requirement:1', 'description': markdown, 'acceptance': '回答用户研究问题，所有事实有证据位置；明确假设、局限和未决问题。', 'constraints': '不编造论文或实验结果；确认时明确责任声明并提供可追溯证据。'}],
                 'queries': [re.sub(r'[#*`\n]+', ' ', text).strip()[:300]]}
 
     def _draft(self, text, previous, editing=False, research_context=None):
-        if not self.settings.public()['capabilities']['modelReady']:
+        settings = self.settings.public()
+        if settings['mode'] != 'llm' or not settings['capabilities']['modelReady']:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
 只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
@@ -290,26 +291,15 @@ class WorkspaceApplication:
             with self._lock:
                 record = self._record(task_id)
                 compiled = copy.deepcopy(record['compiled'])
-                imported = not record.get('needsRetrieval', True)
                 if self._closed or record['token'] != token:
                     return
                 metadata = (record['title'], record['document']['markdown'], record['imported'])
             from .sources import prepare_source
             prepare_source(self.source, self._data_root / task_id / 'source', task_id, metadata[0], metadata[1], import_existing=metadata[2])
-            model_cycle = self.settings.public()['capabilities']['modelReady']
-            if not imported and not model_cycle:
-                for query in compiled['queries']:
-                    with self._lock:
-                        record = self._record(task_id)
-                        if self._closed or record['token'] != token:
-                            return
-                        self._message(record, 'assistant', '正在检索支撑当前问题的论文：' + query, 'progress')
-                        self._save(record)
-                    result = app._retrieve({'query': query, 'topK': 8})
-                    with self._lock:
-                        if self._closed or self._record(task_id)['token'] != token:
-                            return
-                        app.engine.command('refresh-library', {'library': result['library']})
+            settings = self.settings.public()
+            model_cycle = settings['mode'] == 'llm' and settings['capabilities']['modelReady']
+            if settings['mode'] == 'llm' and not model_cycle:
+                raise ValueError('模型模式尚未配置可用主研究连接；请完成设置或切换为已有数据核验')
             with self._mutation_lock:
                 with self._lock:
                     record = self._record(task_id)
@@ -318,12 +308,12 @@ class WorkspaceApplication:
                     state = app.engine.snapshot()
                     if state['project'].get('researchStarted') or state['report'].get('ready') or record['runs']:
                         app.engine.command('next-round', {})
-                    mode = 'llm' if self.settings.public()['capabilities']['modelReady'] else 'evidence'
-                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': True, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm', 'taskMode': record.get('taskMode', 'research')})
+                    mode = 'llm' if model_cycle else 'evidence'
+                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': model_cycle, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm', 'taskMode': record.get('taskMode', 'research')})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']
-                    self._message(record, 'assistant', '先扩充研究背景、检索文献并凝练课题，再提出猜想、索求数据；证据不足时设计与执行实验，数据返回后重新论证。研究取舍会暂停并在对话中请你决定。' if mode == 'llm' else f'已建立 {len(state["facetNodes"])} 个资料节点，开始已有资料核验。当前未配置模型。', 'progress')
+                    self._message(record, 'assistant', '先扩充研究背景、检索文献并凝练课题，再提出猜想、索求数据；证据不足时设计与执行实验，数据返回后重新论证。研究取舍会暂停并在对话中请你决定。' if mode == 'llm' else f'已建立 {len(state["facetNodes"])} 个资料节点，开始离线核验已有资料。本模式不调用模型、不联网检索；缺少资料时记录证据缺口。', 'progress')
                     self._save(record)
         except Exception as exc:
             with self._lock:
@@ -419,7 +409,8 @@ class WorkspaceApplication:
                 self.settings.update(payload)
                 if path == '/api/setup':
                     self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32)
-                return dict(self.settings.public(), ok=True, message='DeepSeek 已连接，所有科研任务共用此连接')
+                message = '主研究模型已连接；证据裁判与对抗复核须单独配置' if path == '/api/setup' else '运行设置已保存'
+                return dict(self.settings.public(), ok=True, message=message)
             except Exception as exc:
                 message = self.settings.safe_error(exc)
                 self.settings.restore(before)
@@ -428,8 +419,9 @@ class WorkspaceApplication:
                 with self._lock:
                     self._configuring = False
         if path == '/api/provider/test':
-            self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32)
-            return {'ok': True, 'message': '模型连接成功'}
+            role = payload.get('role', 'main')
+            self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32, role=role)
+            return {'ok': True, 'role': role, 'message': '模型连接成功'}
         match = re.fullmatch(r'/api/tasks/([a-f0-9]{32})/(.+)', path)
         if not match:
             raise ValueError('未知科研任务操作')
@@ -469,7 +461,7 @@ class WorkspaceApplication:
                 return self.detail(task_id)
         if action.startswith('actions/') or action == 'deepen':
             operation = action.removeprefix('actions/')
-            if operation not in ('pause', 'resume', 'retry', 'impact', 'intervene', 'deepen', 'rollback', 'claim-decision'):
+            if operation not in ('pause', 'resume', 'retry', 'impact', 'intervene', 'deepen', 'rollback', 'claim-decision', 'checkpoint'):
                 raise ValueError('当前对话流程不支持此操作')
             with self._lock:
                 record = self._record(task_id)

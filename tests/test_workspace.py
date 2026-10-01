@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from research_swarm.workspace import WorkspaceApplication
 
@@ -135,6 +136,32 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '已隐藏'):
             self.app.post('/api/setup', {'apiKey': 'unit-test-key-not-real'})
         self.assertEqual(self.app.settings.public(), before)
+
+    def test_role_settings_and_connection_test_select_requested_role(self):
+        public = self.app.post('/api/settings', {'providers': {'judge': {'baseUrl': 'http://localhost:11434/v1', 'model': 'local-judge'}}})
+        self.assertTrue(public['providers']['judge']['ready'])
+        with patch.object(self.app.settings, 'chat', return_value='OK') as chat:
+            result = self.app.post('/api/provider/test', {'role': 'judge'})
+        self.assertEqual(result['role'], 'judge')
+        self.assertEqual(chat.call_args.kwargs['role'], 'judge')
+        self.assertTrue(public['capabilities']['evidenceReady'])
+
+    def test_evidence_mode_never_polishes_with_configured_cloud_model(self):
+        self.app.settings.update({'mode': 'evidence', 'provider': {'apiKey': 'configured-secret'}})
+        with patch.object(self.app.settings, 'chat', side_effect=AssertionError('must stay offline')):
+            result = self.app._draft('核验已有资料', '', False)
+        self.assertEqual(result['source'], 'local')
+        self.assertEqual(self.app.settings.public()['mode'], 'evidence')
+
+    def test_checkpoint_acknowledgement_payload_reaches_task_engine(self):
+        task_id = self.new()
+        self.app.source = Path(__file__).resolve().parents[1] / 'vendor' / 'ai-access'
+        app = self.app._ensure_app(task_id)
+        payload = {'id': 'checkpoint-1', 'decision': 'confirm', 'expectedRevision': 1,
+                   'responsibilityAcknowledged': True, 'responsibilityName': 'Reviewer'}
+        with patch.object(app.engine, 'command', return_value={'ok': True}) as command:
+            self.app.post(f'/api/tasks/{task_id}/actions/checkpoint', payload)
+        command.assert_called_once_with('checkpoint', payload)
 
 
 if __name__ == '__main__':

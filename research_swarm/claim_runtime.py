@@ -1,6 +1,6 @@
 """Bind the scheduling tree to persistent research claims and expression records.
 
-Workers produce observations. Only the owning reasoning node assesses its claim;
+Workers produce observations. A separately configured blind judge assesses claims;
 paper citations and completed processes are never automatically positive proof.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .claims import (ensure_graph, get_claim, create_claim, add_relation,
 def validate_relations(items, known):
     if not isinstance(items, list) or len(items) > 100:
         raise ValueError('evidenceRelations 必须是最多 100 项的列表')
+    directions = {}
     for item in items:
         if not isinstance(item, dict) or item.get('evidenceId') not in known:
             raise ValueError('证据关系必须引用实际 evidenceId')
@@ -27,6 +28,11 @@ def validate_relations(items, known):
             raise ValueError('证据质量必须为 usable/limited/unusable')
         if not isinstance(item.get('reason'), str) or not item['reason'].strip():
             raise ValueError('证据关系必须说明本证据与主张的关系')
+        if item['type'] == 'support' and item.get('polarity', 'unresolved') != 'unresolved':
+            key = item['evidenceId']
+            if key in directions and directions[key] != item['polarity']:
+                raise ValueError('同一证据不能双向挂载；请重审并使用一个 mixed 关系解释冲突')
+            directions[key] = item['polarity']
 
 
 def bind_hypothesis(engine, item, hypothesis_id, parent_claim_ids=None):
@@ -46,7 +52,8 @@ def bind_hypothesis(engine, item, hypothesis_id, parent_claim_ids=None):
             parent_claim_ids=item.get('parentClaimIds') or parent_claim_ids, claim_id=claim_id)
     else:
         previous_target = claim.get('reproductionTarget', claim.get('origin', {}).get('reproductionTarget'))
-        if (claim['scope'] != scope or claim['falsification'] != item['falsification'] or
+        if (claim['statement'] != item['statement'].strip() or claim['scope'] != scope or
+                claim['falsification'] != item['falsification'] or
                 previous_target != item.get('reproductionTarget')):
             revise_claim(state, claim['id'], item['statement'], scope=scope,
                          falsification=item['falsification'], actor='AI', reason='上游研究范围变化，重新建立验证边界',
@@ -92,56 +99,80 @@ def output_relations(state, node, output, phase):
     evidence = {e['id']: e for e in state['evidence']}
     explicit = output.get('structured', {}).get('evidenceRelations', [])
     validate_relations(explicit, set(evidence))
+    review = output.get('structured', {}).get('review', {})
+    independent = review.get('independent') is True and review.get('status') == 'completed' and review.get('role') == 'judge'
+    from .semantic_review import relation_gaps
     accepted = set(output.get('evidenceIds', []))
     for relation in explicit:
         if relation.get('claimId', claim_id) != claim_id or relation.get('claimVersion', claim['version']) != claim['version']:
             raise ValueError('节点不能将取证结果归到其他主张或版本')
-        add_relation(state, claim_id, relation['evidenceId'], relation_type=relation['type'],
-            polarity=relation.get('polarity', 'unresolved'), reason=relation['reason'],
+        proposed = relation.get('polarity', 'unresolved')
+        gaps = relation_gaps(relation, evidence[relation['evidenceId']], claim,
+                             state['project'].get('researchEvidenceApprovals'), state['project'].get('round'))
+        if relation['type'] == 'support' and proposed != 'unresolved' and not independent:
+            gaps.append('生产节点的方向未经过独立裁判复核')
+        link = add_relation(state, claim_id, relation['evidenceId'], relation_type=relation['type'],
+            polarity='unresolved' if gaps else proposed, reason=relation['reason'],
             applicability=relation.get('applicability', ''),
             quality=relation.get('quality', 'limited') if relation['evidenceId'] in accepted else 'unusable')
+        link.update({key: copy.deepcopy(relation.get(key)) for key in ('quote', 'locator', 'rule', 'confidence')})
+        link.update(proposedPolarity=proposed, semanticGate={'passed': not gaps, 'issues': gaps}, review=copy.deepcopy(review))
+        output['unresolved'].extend(gap for gap in gaps if gap not in output['unresolved'])
     represented = {r['evidenceId'] for r in explicit}
     for eid in accepted - represented:
-        add_relation(state, claim_id, eid, reason='执行节点回传的材料；由主张负责人判定支持方向',
+        add_relation(state, claim_id, eid, reason='执行节点回传的材料；等待独立裁判判定支持方向',
                      applicability=claim['scope'])
     verdict = output.get('structured', {}).get('hypothesisVerdict')
     if not verdict or phase != 'aggregate' or node['id'] != claim['ownerNodeId']:
         return
-    polarity = {'supported': 'for', 'refuted': 'against', 'inconclusive': 'unresolved'}[verdict['status']]
     ids = verdict.get('evidenceIds', [])
-    # A legacy owner verdict supplies an explicit direction; worker citations never do.
-    # When directional relations are provided, keep their per-observation direction.
+    # A verdict alone cannot manufacture a directional evidence relationship.
     directed = {r['evidenceId'] for r in explicit if r['type'] == 'support'}
     for eid in ids:
         if eid not in directed:
-            add_relation(state, claim_id, eid, polarity=polarity, reason=verdict['reason'],
+            add_relation(state, claim_id, eid, polarity='unresolved', reason=verdict['reason'],
                          applicability=claim['scope'], quality='limited')
         if verdict.get('limitations'):
             add_relation(state, claim_id, eid, relation_type='qualify',
                          reason=verdict['limitations'], applicability=claim['scope'])
     current = [r for r in state['claimGraph']['relations'] if r['claimId'] == claim_id and
                r['claimVersion'] == claim['version'] and r['type'] == 'support' and
-               r['quality'] != 'unusable' and evidence.get(r['evidenceId'], {}).get('locator')]
+               r['quality'] != 'unusable' and r.get('semanticGate', {}).get('passed') and
+               r.get('review', {}).get('independent') and evidence.get(r['evidenceId'], {}).get('locator')]
     directions = {r['polarity'] for r in current}
     status = 'mixed' if 'mixed' in directions or {'for', 'against'}.issubset(directions) else verdict['status']
     if status == 'mixed':
         ids = list(dict.fromkeys(ids + [r['evidenceId'] for r in current if r['polarity'] != 'unresolved']))
     if status == 'supported' and 'for' not in directions or status == 'refuted' and 'against' not in directions:
         status = 'inconclusive'
+    covered = {r['evidenceId'] for r in current if r['polarity'] != 'unresolved'}
+    omitted_counterevidence = [r['evidenceId'] for r in state['claimGraph']['relations'] if
+        r['claimId'] == claim_id and r['claimVersion'] == claim['version'] and
+        r.get('proposedPolarity', r['polarity']) in ('against', 'mixed') and
+        r['evidenceId'] not in {item['evidenceId'] for item in explicit}]
+    if status == 'supported' and omitted_counterevidence:
+        status = 'inconclusive'
+        ids = list(dict.fromkeys(ids + omitted_counterevidence))
+    if not independent or (status in ('supported', 'refuted') and not set(ids).issubset(covered)):
+        status = 'inconclusive'
     assess_claim(state, claim_id, status, verdict['reason'], evidence_ids=ids,
                  limitations=verdict.get('limitations', ''))
+    claim['assessment']['review'] = copy.deepcopy(review) or {'status': 'unreviewed', 'independent': False, 'role': 'main', 'needsHumanReview': True}
     if status in ('mixed', 'inconclusive') and verdict['status'] != 'inconclusive':
         verdict['status'] = 'inconclusive'
         verdict['evidenceIds'] = ids
         output['evidenceIds'] = list(dict.fromkeys(output['evidenceIds'] + ids))
-        verdict['reason'] += '；保留本主张已有反面或混合证据，不能通过省略证据宣布收敛。'
+        verdict['reason'] += '；独立复核或证据门尚未支持定论，保留冲突与缺口。'
+        output['summary'] = verdict['reason']
+        output['claims'] = []
+        claim['assessment']['reason'] = verdict['reason']
         for h in state['project'].get('researchCycle', {}).get('hypotheses', []):
             if h.get('claimId') == claim_id:
                 h.update(status='inconclusive', verdict=copy.deepcopy(verdict))
 
 
 def claim_intervention(engine, node, payload):
-    """Called after optimistic revision validation and before task invalidation."""
+    """Return true only for an editorial owner edit requiring no task rerun."""
     claim_id = payload.get('claimId') or node['input'].get('claimId')
     if not claim_id:
         return
@@ -150,16 +181,24 @@ def claim_intervention(engine, node, payload):
     if node['id'] != claim['ownerNodeId']:
         return
     if kind == 'modify':
+        previous_version = claim['version']
+        target = {'reproduction_target': payload['reproductionTarget']} if 'reproductionTarget' in payload else {}
         claim = revise_claim(engine._state, claim_id, payload['text'], scope=payload.get('scope'),
-                             falsification=payload.get('falsification'), reason=payload['text'])
+                             falsification=payload.get('falsification'), reason=payload['text'], **target)
+        current_target = claim.get('reproductionTarget', claim.get('origin', {}).get('reproductionTarget'))
         node['title'] = claim['statement'][:120]
         node['input']['claimVersion'] = claim['version']
         node['input']['hypothesis'] = {**node['input'].get('hypothesis', {}),
-            'statement': claim['statement'], 'scope': claim['scope'], 'falsification': claim['falsification']}
+            'statement': claim['statement'], 'scope': claim['scope'], 'falsification': claim['falsification'],
+            'reproductionTarget': copy.deepcopy(current_target)}
         for hypothesis in engine._state['project'].get('researchCycle', {}).get('hypotheses', []):
             if hypothesis.get('nodeId') == node['id']:
                 hypothesis.update(statement=claim['statement'], scope=claim['scope'],
-                                  falsification=claim['falsification'], claimVersion=claim['version'])
+                                  falsification=claim['falsification'], claimVersion=claim['version'],
+                                  reproductionTarget=copy.deepcopy(current_target))
+        editorial_fields = {'claimId', 'nodeId', 'kind', 'text', 'scope', 'falsification',
+                            'reproductionTarget', 'expectedRevision'}
+        return claim['version'] == previous_version and set(payload).issubset(editorial_fields)
     if kind == 'reject':
         claim.setdefault('decisions', []).append({'actor': 'user', 'decision': 'reject',
             'version': claim['version'], 'reason': payload['text'], 'at': engine._cycle_now()})
@@ -207,7 +246,7 @@ def report_from_claims(state):
     refs = []
     lines = ['# ' + state['project']['title'], '', '当前为可审阅的研究草稿。用户确认记录不等同外部科学验证。', '',
              '## 问题与研究范围', '', state['project'].get('description', ''), '', '## 主张与证据', '']
-    status_names = {'supported': '证据支持（候选）', 'refuted': '证据反对（候选）', 'mixed': '证据存在冲突',
+    status_names = {'supported': '模型复核认为支持（候选）', 'refuted': '模型复核认为反对（候选）', 'mixed': '证据存在冲突',
                     'unassessed': '尚待论证', 'inconclusive': '证据尚不足'}
     for claim in selected:
         assessment = claim['assessment']

@@ -8,8 +8,7 @@ from pathlib import Path
 
 from research_swarm.engine import Engine
 from research_swarm.server import export_bundle
-from test_engine import sample_library
-from test_research_cycle import CycleRunner
+from test_research_cycle import CycleRunner, cycle_library as sample_library
 from test_workspace import wait_until
 
 
@@ -74,6 +73,75 @@ class ClaimRuntimeTests(unittest.TestCase):
         active = next(n for n in updated['nodes'] if n['id'] == revised['ownerNodeId'])
         self.assertEqual(active['input']['claimVersion'], 2)
 
+    def test_editorial_intervention_keeps_assessment_and_does_not_rerun_nodes(self):
+        engine, state = self.run_cycle()
+        claim = next(c for c in state['claimGraph']['claims'] if c['origin']['kind'] == 'hypothesis')
+        updated = engine.command('intervene', {'claimId': claim['id'], 'kind': 'modify',
+            'expectedRevision': state['revision'], 'text': claim['statement'] + '。'})
+        revised = next(c for c in updated['claimGraph']['claims'] if c['id'] == claim['id'])
+        self.assertEqual(revised['version'], claim['version'])
+        self.assertEqual(revised['assessment'], claim['assessment'])
+        self.assertEqual(revised['versions'], claim['versions'])
+        self.assertEqual(updated['claimGraph']['relations'], state['claimGraph']['relations'])
+        self.assertEqual(len(revised['editorialEdits']), 1)
+        self.assertTrue(updated['report']['ready'])
+        self.assertEqual([(n['id'], n['version'], n['status']) for n in updated['nodes']],
+                         [(n['id'], n['version'], n['status']) for n in state['nodes']])
+        old_expression = next(e for e in updated['claimGraph']['expressions'] if e['id'] == state['report']['expressionId'])
+        self.assertFalse(old_expression.get('stale', False))
+
+    def test_editorial_signal_does_not_skip_other_intervention_parameters(self):
+        from research_swarm.claim_runtime import claim_intervention
+        from research_swarm.claims import create_claim
+        engine = self.engine()
+        claim = create_claim(engine._state, 'A beats B', owner_node_id='central', claim_id='c')
+        node = engine._get_node('central')
+        node['input']['claimId'] = claim['id']
+        for field, value in [('acceptance', 'Stricter checks'), ('experiment', {'id': 'new'}),
+                             ('constraints', 'GPU'), ('requirements', []), ('library', {})]:
+            with self.subTest(field=field):
+                signal = claim_intervention(engine, node, {'claimId': claim['id'], 'kind': 'modify',
+                    'text': 'A beats B.', field: value})
+                self.assertFalse(signal)
+        self.assertEqual(claim['version'], 1)
+
+    def test_reused_hypothesis_id_with_new_statement_creates_semantic_version(self):
+        from research_swarm.claim_runtime import bind_hypothesis
+        engine = self.engine()
+        base = {'statement': 'A beats B', 'falsification': 'No gain', 'reason': 'Test', 'evidenceIds': ['101']}
+        initial = bind_hypothesis(engine, base, 'hypothesis-fixture')
+        old_version = copy.deepcopy(initial['versions'][0])
+        revised = bind_hypothesis(engine, {**base, 'statement': 'A does not beat B'}, 'hypothesis-fixture')
+        self.assertEqual(revised['version'], 2)
+        self.assertEqual(revised['versions'][0], old_version)
+        self.assertEqual(revised['statement'], 'A does not beat B')
+
+    def test_reproduction_target_edit_updates_owner_and_cycle_without_aliasing(self):
+        from research_swarm.claim_runtime import bind_hypothesis, claim_intervention
+        engine = self.engine()
+        original = {'metric': 'score', 'expected': '1', 'tolerance': '.1', 'conditions': 'Dataset X'}
+        base = {'statement': 'Reproduce the score', 'falsification': 'Outside tolerance', 'reason': 'Test',
+                'evidenceIds': ['101'], 'reproductionTarget': original}
+        current = bind_hypothesis(engine, base, 'hypothesis-fixture')
+        node = engine._get_node('central')
+        current['ownerNodeId'] = node['id']
+        node['input']['claimId'] = current['id']
+        node['input']['hypothesis'] = copy.deepcopy(base)
+        cycle_hypothesis = {**copy.deepcopy(base), 'nodeId': node['id']}
+        engine._state['project']['researchCycle'] = {'hypotheses': [cycle_hypothesis]}
+        changed = {**original, 'expected': '2'}
+        self.assertFalse(claim_intervention(engine, node, {'claimId': current['id'], 'kind': 'modify',
+            'text': base['statement'], 'reproductionTarget': changed}))
+        self.assertEqual(current['version'], 2)
+        self.assertEqual(current['versions'][0]['reproductionTarget'], original)
+        self.assertEqual(node['input']['hypothesis']['reproductionTarget'], changed)
+        self.assertEqual(cycle_hypothesis['reproductionTarget'], changed)
+        changed['expected'] = '99'
+        self.assertEqual(current['reproductionTarget']['expected'], '2')
+        node['input']['hypothesis']['reproductionTarget']['expected'] = '88'
+        self.assertEqual(current['reproductionTarget']['expected'], '2')
+        self.assertEqual(cycle_hypothesis['reproductionTarget']['expected'], '2')
+
     def test_reproduction_mode_changes_context_and_expression_kind(self):
         modes = []
 
@@ -96,7 +164,8 @@ class ClaimRuntimeTests(unittest.TestCase):
         engine, state = self.run_cycle()
         claim = next(c for c in state['claimGraph']['claims'] if c['origin']['kind'] == 'hypothesis')
         confirmed = engine.command('claim-decision', {'claimId': claim['id'],
-            'expectedRevision': state['revision'], 'decision': 'confirm', 'note': '同意此范围内的判断'})
+            'expectedRevision': state['revision'], 'decision': 'confirm', 'note': '同意此范围内的判断',
+            'responsibilityAcknowledged': True, 'responsibilityName': '测试审阅者'})
         self.assertTrue(next(c for c in confirmed['claimGraph']['claims'] if c['id'] == claim['id'])['assessment']['confirmedByUser'])
         with zipfile.ZipFile(io.BytesIO(export_bundle(confirmed, engine._artifact_root))) as bundle:
             self.assertIn('claim-graph.json', bundle.namelist())
@@ -147,11 +216,12 @@ class ClaimRuntimeTests(unittest.TestCase):
                         'polarity': 'against', 'reason': '相同范围出现反例', 'quality': 'usable'}]
                 if step == 'hypothesis' and node['phase'] == 'aggregate':
                     output['structured']['hypothesisVerdict']['evidenceIds'] = ['101']
+                    output['structured']['evidenceRelations'] = [r for r in output['structured']['evidenceRelations'] if r['evidenceId'] == '101']
                     output['evidenceIds'] = ['101']
                 return output
         _, state = self.run_cycle(CherryPick())
         claim = next(c for c in state['claimGraph']['claims'] if c['origin']['kind'] == 'hypothesis')
-        self.assertEqual(claim['assessment']['status'], 'mixed')
+        self.assertEqual(claim['assessment']['status'], 'inconclusive')
         self.assertIn('102', claim['assessment']['evidenceIds'])
         self.assertNotEqual(state['project']['researchCycle']['status'], 'converged')
 

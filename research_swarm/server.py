@@ -23,9 +23,7 @@ from .local_tools import LocalResearchTools
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SOURCE = Path(r'C:\Users\dcm_0\XiaomiMiMoProjects\.mimo-sessions\2026\09\26\ai-access')
-if not DEFAULT_SOURCE.is_dir():
-    DEFAULT_SOURCE = APP_ROOT / 'vendor' / 'ai-access'
+DEFAULT_SOURCE = Path(os.environ.get('RESEARCH_SWARM_SOURCE') or APP_ROOT / 'vendor' / 'ai-access').expanduser()
 
 
 def utc_now():
@@ -229,8 +227,9 @@ class ResearchApplication:
                     raise
                 return result
         if path == '/api/provider/test':
-            response = self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32)
-            return {'ok': True, 'message': '模型连接成功：' + response[:80]}
+            role = payload.get('role', 'main')
+            self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32, role=role)
+            return {'ok': True, 'role': role, 'message': '模型连接成功'}
         if path == '/api/retrieve':
             state = self.engine.snapshot()
             if any(n['status'] == 'running' for n in state['nodes']) or state['status'] == 'running':

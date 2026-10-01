@@ -337,6 +337,9 @@ def _existing_sources(engine, ids, demand):
             approval = engine._state['project'].get('researchEvidenceApprovals', {}).get(eid)
             receipt = (engine._artifact_root / evidence['locator']).resolve()
             if (evidence.get('executionStatus') != 'completed' or not approval or
+                    not approval.get('review', {}).get('independent') or
+                    approval.get('review', {}).get('status') != 'completed' or
+                    approval.get('review', {}).get('role') != 'redteam' or
                     not receipt.is_relative_to(engine._artifact_root / 'runs') or not receipt.is_file() or
                     hashlib.sha256(receipt.read_bytes()).hexdigest() != evidence.get('sha256')):
                 return False
@@ -402,7 +405,12 @@ def accept(engine, node, output, token):
         latest = engine._children(node['id'])[-1] if engine._children(node['id']) else None
         review = structured.get('experimentReview', {})
         valid_execution = bool(latest and (latest.get('output') or {}).get('structured', {}).get('experimentRun', {}).get('verified'))
-        if phase == 'aggregate' and review.get('valid') and valid_execution:
+        reviewer = structured.get('review', {})
+        independently_reviewed = (reviewer.get('role') == 'redteam' and reviewer.get('independent') is True
+                                  and reviewer.get('status') == 'completed')
+        if phase == 'aggregate' and review.get('valid') and not independently_reviewed:
+            review.update(valid=False, blocked=True, reason='缺少独立红队复核；执行成功不等同实验有效。')
+        if phase == 'aggregate' and review.get('valid') and valid_execution and independently_reviewed:
             ids = latest['output']['evidenceIds']
             if not ids or not review['evidenceIds'] or not set(review['evidenceIds']).issubset(set(ids)):
                 raise ValueError('实验复核必须引用当前实验返回的实际凭据')
@@ -421,7 +429,10 @@ def accept(engine, node, output, token):
             experiment.update(reviewStatus='accepted', reviewReason=review['reason'])
             for e in engine._state['evidence']:
                 if e['id'] in ids:
-                    approval = {'protocolId': run['protocolId'], 'designNodeId': node['id'], 'executionNodeId': latest['id'], 'dataDemand': copy.deepcopy(node['input']['dataDemand']), 'artifactHashes': copy.deepcopy(run['artifactHashes'])}
+                    approval = {'protocolId': run['protocolId'], 'designNodeId': node['id'], 'executionNodeId': latest['id'], 'dataDemand': copy.deepcopy(node['input']['dataDemand']), 'artifactHashes': copy.deepcopy(run['artifactHashes']),
+                                'measurements': copy.deepcopy(run['measurements']),
+                                'conditions': latest['input']['experimentProtocol'].get('conditions'),
+                                'review': copy.deepcopy(reviewer), 'round': engine._state['project']['round']}
                     e['researchValidation'] = approval
                     engine._state['project'].setdefault('researchEvidenceApprovals', {})[e['id']] = approval
         else:

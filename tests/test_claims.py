@@ -202,6 +202,134 @@ class ClaimDomainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             add_relation(s, 'c', 'e2', claim_version=1)
 
+    def test_editorial_edits_keep_version_evidence_assessment_and_expression(self):
+        s = state()
+        claim = create_claim(s, 'A beats B.', scope='Dataset X', falsification='No gain', claim_id='c')
+        add_relation(s, 'c', 'e1', polarity='for', quality='usable')
+        assess_claim(s, 'c', 'supported', 'Located support', ['e1'], confirmed_by_user=True)
+        expression = create_expression(s, 'paper', 'Result', 'A beats B.',
+                                       [{'claimId': 'c', 'version': 1}], confirmed=True)
+        before = copy.deepcopy(s)
+        revised = revise_claim(s, 'c', ' A  beats\tB。 ', actor='user', reason='Typography')
+        self.assertEqual(revised['version'], 1)
+        self.assertEqual(revised['statement'], 'A  beats\tB。')
+        self.assertEqual(revised['versions'], before['claimGraph']['claims'][0]['versions'])
+        self.assertEqual(revised['assessment'], before['claimGraph']['claims'][0]['assessment'])
+        self.assertEqual(revised['assessmentHistory'], before['claimGraph']['claims'][0]['assessmentHistory'])
+        self.assertEqual(s['claimGraph']['relations'], before['claimGraph']['relations'])
+        self.assertEqual(expression, before['claimGraph']['expressions'][0])
+        edit = revised['editorialEdits'][0]
+        self.assertEqual((edit['version'], edit['before'], edit['after'], edit['actor'], edit['reason']),
+                         (1, 'A beats B.', 'A  beats\tB。', 'user', 'Typography'))
+        self.assertTrue(edit['id'])
+        self.assertTrue(edit['at'])
+        assess_claim(s, 'c', 'supported', 'Still current', ['e1'])
+
+    def test_identical_revision_is_a_noop_without_spurious_audit_entries(self):
+        s = state()
+        claim = create_claim(s, 'Same claim', claim_id='c')
+        before = copy.deepcopy(s)
+        self.assertIs(revise_claim(s, 'c', ' Same claim '), claim)
+        self.assertEqual(s, before)
+
+    def test_only_safe_declarative_punctuation_is_editorial(self):
+        for original, edited in [('A beats B.', 'A beats B'), ('A beats B', 'A beats B .'),
+                                 ('结论成立。', '结论成立'), ('均值为 1.2。', '均值为 1.2')]:
+            with self.subTest(original=original, edited=edited):
+                s = state()
+                create_claim(s, original, claim_id='c')
+                self.assertEqual(revise_claim(s, 'c', edited)['version'], 1)
+
+    def test_math_decimal_signs_words_and_structural_whitespace_are_semantic(self):
+        pairs = [('x = 1.0', 'x = 10'), ('x = .5', 'x = 5'), ('x = 1.', 'x = 1'),
+                 ('x = 2!', 'x = 2'), ('x = -1', 'x = 1'), ('x = +1', 'x = 1'),
+                 ('x < 1', 'x <= 1'), ('x ≠ 1', 'x = 1'), ('x = a,b', 'x = ab'),
+                 ('A beats B?', 'A beats B'), ('A beats B...', 'A beats B'),
+                 ('A beats B', 'A does not beat B'), ('matrix 1 2\n3 4', 'matrix 1 2 3 4'),
+                 ('x y', 'xy')]
+        for original, edited in pairs:
+            with self.subTest(original=original, edited=edited):
+                s = state()
+                create_claim(s, original, claim_id='c')
+                self.assertEqual(revise_claim(s, 'c', edited)['version'], 2)
+                self.assertNotIn('editorialEdits', get_claim(s, 'c'))
+
+    def test_scope_falsification_and_target_changes_always_create_versions(self):
+        for change in ({'scope': 'Dataset X.'}, {'falsification': 'No gain.'},
+                       {'reproduction_target': {'expected': '1.1', 'tolerance': '0.1'}},
+                       {'reproduction_target': None}):
+            with self.subTest(change=change):
+                s = state()
+                claim = create_claim(s, 'A beats B', scope='Dataset X', falsification='No gain',
+                                     origin={'reproductionTarget': {'expected': '1', 'tolerance': '0.1'}},
+                                     claim_id='c')
+                add_relation(s, 'c', 'e1', polarity='for', quality='usable')
+                assess_claim(s, 'c', 'supported', 'Located support', ['e1'])
+                revised = revise_claim(s, 'c', 'A beats B.', **change)
+                self.assertEqual(revised['version'], 2)
+                self.assertEqual(revised['assessment']['status'], 'unassessed')
+                self.assertEqual(claim['origin']['reproductionTarget']['expected'], '1')
+                with self.assertRaises(ValueError):
+                    assess_claim(s, 'c', 'supported', 'Stale evidence', ['e1'])
+
+    def test_quoted_strings_and_code_whitespace_are_semantic(self):
+        pairs = [('输出 "a  b"', '输出 "a b"'), ("输出 'a  b'", "输出 'a b'"),
+                 ('输出 “a  b”', '输出 “a b”'), ('输出「a  b」', '输出「a b」'),
+                 ('`a  b` is the result', '`a b` is the result'),
+                 ('```python\nx = "a  b"\n```', '```python\nx = "a b"\n```'),
+                 ('~~~python\nx =  1\n~~~', '~~~python\nx = 1\n~~~'),
+                 ('<code>a  b</code>', '<code>a b</code>'),
+                 ('    return 1', 'return 1'), ('\treturn 1', 'return 1'),
+                 ('\n    return 1\n', '    return 1'),
+                 ('if ready:\n    return 1\n', 'if ready:\nreturn 1\n')]
+        for original, edited in pairs:
+            with self.subTest(original=original, edited=edited):
+                s = state()
+                created = create_claim(s, original, claim_id='c')
+                self.assertEqual(created['statement'], original)
+                revised = revise_claim(s, 'c', edited)
+                self.assertEqual(revised['version'], 2)
+                self.assertEqual(revised['versions'][0]['statement'], original)
+                self.assertEqual(revised['statement'], edited)
+                self.assertNotIn('editorialEdits', revised)
+
+    def test_verbatim_statement_edges_and_identical_revisions_are_preserved(self):
+        for statement in ('\n```python\n    return "a  b"\n```\n', '\treturn 1\n',
+                          '    return 1', '  输出 "a b"  '):
+            with self.subTest(statement=statement):
+                s = state()
+                created = create_claim(s, statement, claim_id='c')
+                before = copy.deepcopy(s)
+                self.assertEqual(created['statement'], statement)
+                self.assertIs(revise_claim(s, 'c', statement), created)
+                self.assertEqual(s, before)
+
+    def test_changed_claim_invalidates_only_expressions_referencing_it(self):
+        s = state()
+        create_claim(s, 'First', claim_id='c')
+        create_claim(s, 'Independent', claim_id='other')
+        affected = create_expression(s, 'paper', 'Affected', 'Body', [{'claimId': 'c', 'version': 1}], confirmed=True)
+        untouched = create_expression(s, 'paper', 'Independent', 'Body', [{'claimId': 'other', 'version': 1}], confirmed=True)
+        before = copy.deepcopy(untouched)
+        revise_claim(s, 'c', 'Changed')
+        self.assertEqual(affected['status'], 'draft')
+        self.assertTrue(affected['stale'])
+        self.assertEqual(untouched, before)
+
+    def test_rollback_retains_editorial_audit_without_changing_restored_wording(self):
+        s = state()
+        create_claim(s, 'A beats B', claim_id='c')
+        checkpoint = copy.deepcopy(s)
+        revised = revise_claim(s, 'c', 'A beats B.')
+        edit = copy.deepcopy(revised['editorialEdits'][0])
+        preserve_history(checkpoint, s)
+        restored = get_claim(checkpoint, 'c')
+        self.assertEqual(restored['statement'], 'A beats B')
+        self.assertEqual(restored['version'], 1)
+        self.assertEqual(restored['editorialEdits'], [edit])
+        preserve_history(checkpoint, s)
+        self.assertEqual(restored['editorialEdits'], [edit])
+
     def test_expression_refs_must_resolve_exact_versions(self):
         s = state()
         create_claim(s, 'First', claim_id='c')

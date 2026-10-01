@@ -6,8 +6,12 @@ import unittest
 import urllib.error
 import urllib.request
 import zipfile
+import os
+import subprocess
+import sys
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from research_swarm.server import make_handler, export_bundle
 from research_swarm.server import ResearchApplication
@@ -79,6 +83,25 @@ class ServerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.post('/api/settings', {'provider': {'baseUrl': 'https://example.com/v1'}})
             self.assertEqual(app.settings.public(), before)
+
+    def test_provider_connection_test_routes_role_without_returning_model_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = ResearchApplication.__new__(ResearchApplication)
+            app.settings = Settings(Path(temp), None)
+            with patch.object(app.settings, 'chat', return_value='unexpected-sensitive-model-output') as chat:
+                result = app.post('/api/provider/test', {'role': 'redteam'})
+            self.assertEqual(result['role'], 'redteam')
+            self.assertEqual(chat.call_args.kwargs['role'], 'redteam')
+            self.assertNotIn('unexpected-sensitive', json.dumps(result))
+
+    def test_source_environment_overrides_portable_vendor_default(self):
+        command = [sys.executable, '-X', 'utf8', '-c', 'from research_swarm.server import DEFAULT_SOURCE; print(DEFAULT_SOURCE)']
+        env = dict(os.environ, RESEARCH_SWARM_SOURCE=str(Path.cwd() / 'custom-source'))
+        configured = subprocess.run(command, env=env, capture_output=True, text=True, encoding='utf-8', timeout=15, check=True)
+        self.assertEqual(Path(configured.stdout.strip()), Path(env['RESEARCH_SWARM_SOURCE']))
+        env.pop('RESEARCH_SWARM_SOURCE')
+        default = subprocess.run(command, env=env, capture_output=True, text=True, encoding='utf-8', timeout=15, check=True)
+        self.assertEqual(Path(default.stdout.strip()), Path(__file__).resolve().parents[1] / 'vendor' / 'ai-access')
 
     def test_deepening_cannot_start_with_uncommitted_provider_settings(self):
         with tempfile.TemporaryDirectory() as temp:

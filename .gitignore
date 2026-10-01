@@ -17,4 +17,5 @@ config.local.json
 *.log
 .DS_Store
 work/
+benchmark-results/
 .superpowers/

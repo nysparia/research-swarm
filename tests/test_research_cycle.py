@@ -5,12 +5,23 @@ from pathlib import Path
 
 from research_swarm.engine import Engine
 from research_swarm.local_tools import LocalResearchTools
-from test_engine import sample_library
+from test_engine import sample_library as base_library
 from test_workspace import wait_until
 
 
 def result(structured, evidence=None, summary='阶段结果'):
     return {'summary': summary, 'evidenceIds': evidence or [], 'claims': [], 'structured': structured, 'unresolved': []}
+
+
+def cycle_library():
+    """Synthetic full-text observations for orchestration, not semantic evaluation."""
+    library = base_library()
+    for evidence in library['evidence']:
+        evidence.update(type='full_text', locator='fixture page 1', quote='人工编写的调度测试观察，不代表真实科研结论。')
+    return library
+
+
+sample_library = cycle_library
 
 
 class CycleRunner:
@@ -47,7 +58,8 @@ class CycleRunner:
                 if latest.get('verified'):
                     for path in (latest['script'], latest['metricsArtifact'], latest['rawDataArtifact']):
                         self.tools.call('artifact_read', {'path': path}, node, context, log)
-                return result({'experimentReview': {'valid': latest['status'] == 'completed', 'reason': '已检查协议与数据', 'evidenceIds': latest.get('evidenceIds', [])}, 'experimentProtocol': protocol}, latest.get('evidenceIds', []))
+                return result({'experimentReview': {'valid': latest['status'] == 'completed', 'reason': '已检查协议与数据', 'evidenceIds': latest.get('evidenceIds', [])}, 'experimentProtocol': protocol,
+                    'review': {'role': 'redteam', 'independent': True, 'status': 'completed', 'identity': {'model': 'test-double-redteam'}}}, latest.get('evidenceIds', []))
             return result({'experimentProtocol': protocol})
         if step == 'experiment_execution':
             if not self.failed_once:
@@ -68,7 +80,13 @@ class CycleRunner:
             return result({'evidenceResponse': {'sufficient': bool(ids), 'evidenceIds': ids, 'reason': '子结果已返回'}}, ids)
         if step == 'hypothesis':
             ids = [e for child in context['children'] for e in child['output']['evidenceIds']]
-            return result({'hypothesisVerdict': {'status': 'inconclusive' if not ids else 'refuted' if self.refute else 'supported', 'evidenceIds': ids, 'reason': '数据与预先定义的判定标准比较', 'limitations': '仅测试范围'}} , ids)
+            known = {e['id']: e for e in context['library']['evidence']}
+            relations = [{'evidenceId': eid, 'type': 'support', 'polarity': 'against' if self.refute else 'for',
+                'reason': '仅验证调度边界的测试替身', 'quality': 'usable', 'quote': known[eid]['quote'],
+                'locator': known[eid]['locator'], 'rule': 'verified_measurement' if known[eid]['type'] == 'experiment' else 'direct_statement',
+                'confidence': .9} for eid in ids]
+            return result({'hypothesisVerdict': {'status': 'inconclusive' if not ids else 'refuted' if self.refute else 'supported', 'evidenceIds': ids, 'reason': '数据与预先定义的判定标准比较', 'limitations': '仅测试范围'},
+                'evidenceRelations': relations, 'review': {'role': 'judge', 'independent': True, 'status': 'completed', 'identity': {'model': 'test-double-judge'}}}, ids)
         if step == 'synthesis':
             completed = context['researchCycle']['hypotheses']
             ids = list(dict.fromkeys(e for h in completed for e in (h.get('verdict') or {}).get('evidenceIds', [])))

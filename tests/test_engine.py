@@ -139,7 +139,8 @@ class EngineTests(unittest.TestCase):
     def confirm(self, engine=None):
         engine = engine or self.engine
         return engine.command("checkpoint", {"id": engine.snapshot()["activeCheckpointId"],
-                                              "decision": "confirm"})
+                                              "decision": "confirm", "responsibilityAcknowledged": True,
+                                              "responsibilityName": "测试审阅者"})
 
     def start(self):
         self.confirm()
@@ -319,7 +320,8 @@ class EngineTests(unittest.TestCase):
         def confirm_once():
             barrier.wait()
             try:
-                self.engine.command("checkpoint", {"id": checkpoint, "decision": "confirm"})
+                self.engine.command("checkpoint", {"id": checkpoint, "decision": "confirm",
+                    "responsibilityAcknowledged": True, "responsibilityName": "测试审阅者"})
                 results.append("confirmed")
             except ValueError:
                 results.append("rejected")

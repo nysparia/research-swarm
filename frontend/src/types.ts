@@ -35,12 +35,12 @@ export interface CanonicalClaim {
   id: string; statement: string; scope: string; falsification: string; ownerNodeId: string | null;
   parentClaimIds: string[]; version: number; versions: CanonicalClaimVersion[];
   origin?: { kind?: string; nodeId?: string; evidenceIds?: string[] };
-  assessment: { status: 'unassessed' | 'supported' | 'refuted' | 'mixed' | 'inconclusive'; reason?: string; evidenceIds?: string[]; limitations?: string; confirmedByUser?: boolean };
+  assessment: { status: 'unassessed' | 'supported' | 'refuted' | 'mixed' | 'inconclusive'; reason?: string; evidenceIds?: string[]; limitations?: string; confirmedByUser?: boolean; review?: { independent?: boolean; status?: string; role?: string } };
   createdAt?: string; updatedAt?: string;
   archived?: boolean;
-  decisions?: { actor: string; decision: string; version: number; reason?: string; at?: string }[];
+  decisions?: { actor: string; decision: string; version: number; reason?: string; at?: string; responsibilityName?: string; responsibilityAcknowledged?: boolean }[];
 }
-export interface ClaimRelation { id: string; claimId: string; claimVersion: number; evidenceId: string; type: 'support' | 'qualify'; polarity: 'for' | 'against' | 'mixed' | 'unresolved'; reason?: string; applicability?: string; quality?: 'usable' | 'limited' | 'unusable'; sourceGroup?: string; createdAt?: string }
+export interface ClaimRelation { id: string; claimId: string; claimVersion: number; evidenceId: string; type: 'support' | 'qualify'; polarity: 'for' | 'against' | 'mixed' | 'unresolved'; reason?: string; applicability?: string; quality?: 'usable' | 'limited' | 'unusable'; sourceGroup?: string; createdAt?: string; quote?: string; locator?: string; rule?: string; confidence?: number; semanticGate?: { passed: boolean; issues?: string[] } }
 export interface ClaimExpression { id: string; kind: 'paper' | 'reproduction_report'; title: string; markdown: string; claimRefs: { claimId: string; version: number }[]; status: 'draft' | 'confirmed'; createdAt?: string }
 export interface ClaimGraph { schemaVersion: number; claims: CanonicalClaim[]; relations: ClaimRelation[]; expressions: ClaimExpression[]; materials: Record<string, unknown>[] }
 export interface ResearchNode {
@@ -116,6 +116,8 @@ export interface Checkpoint {
   revision: number;
   decision?: string;
   userNote?: string;
+  responsibilityName?: string;
+  responsibilityAcknowledged?: boolean;
 }
 export interface Snapshot {
   revision: number;
@@ -138,9 +140,20 @@ export interface Snapshot {
   operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string }[];
 }
 export interface Impact { revision: number; affectedIds: string[]; downstreamCount: number }
+export type ProviderRole = 'main' | 'judge' | 'redteam';
+export interface ProviderSettings {
+  type: string;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  configured?: boolean;
+  ready?: boolean;
+  independentFromMain?: boolean;
+}
 export interface Settings {
   mode: 'evidence' | 'llm';
-  provider: { type: string; baseUrl: string; model: string; hasKey: boolean };
+  provider: ProviderSettings;
+  providers?: Record<ProviderRole, ProviderSettings>;
   sourcePath: string;
   capabilities: Record<string, unknown>;
 }

@@ -1,5 +1,7 @@
 # Claim-first research core
 
+> Historical design and acceptance record for main@621e725. The 2026-10-01 remediation adds separate blind judge/redteam routing, host evidence gates, responsibility signatures and conservative editorial equivalence. See [current remediation boundaries](audit-remediation.md) and the README; owner-only assessment and unrestricted confirmation described below are superseded.
+
 ## Ownership and storage
 
 The existing SQLite envelope now persists `claimGraph` schema 1. The scheduler tree remains the execution/causal view. Each hypothesis first creates a canonical claim, then receives an owner node; every descendant carries its claim ID and version. Preparation nodes establish context before any scientific claim exists. Library facets organize material, not persistent research identity. The compatibility `researchCycle.hypotheses` records reference canonical claims rather than replacing them.

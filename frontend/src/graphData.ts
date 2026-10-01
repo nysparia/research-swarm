@@ -14,30 +14,9 @@ export interface VisualNode {
   active: boolean;
   x?: number;
   y?: number;
-  z?: number;
-  fx?: number;
-  fy?: number;
-  fz?: number;
-  vx?: number;
-  vy?: number;
-  vz?: number;
 }
 export interface VisualLink { source: string | VisualNode; target: string | VisualNode; type: string; reason: string; id?: string }
 export interface ResearchGraphData { nodes: VisualNode[]; links: VisualLink[] }
-
-export function mergeGraphLinkReasons(current: VisualLink[], incoming: VisualLink[]) {
-  const id = (node: string | VisualNode) => typeof node === 'string' ? node : node.id;
-  const key = (link: VisualLink) => link.id || `${id(link.source)}|${id(link.target)}|${link.type}`;
-  const metadata = new Map(incoming.map(link => [key(link), link.reason]));
-  for (const link of current) if (metadata.has(key(link))) link.reason = metadata.get(key(link))!;
-}
-
-export function mergeGraphNodes(incoming: VisualNode[], existing: Map<string, VisualNode>): VisualNode[] {
-  return incoming.map(node => {
-    const previous = existing.get(node.id);
-    return previous ? Object.assign(previous, node) : { ...node };
-  });
-}
 
 export function buildGraphData(state: Snapshot | null): ResearchGraphData {
   if (!state) return { nodes: [], links: [] };

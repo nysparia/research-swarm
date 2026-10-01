@@ -262,15 +262,24 @@ class Engine:
             raise ValueError('只能确认当前主张；修改或否决请先预览影响范围')
         if claim['assessment']['status'] == 'unassessed':
             raise ValueError('主张尚未论证，不能确认研究判断')
+        acknowledgement = self._responsibility(payload)
         claim['assessment']['confirmedByUser'] = True
         decision = {'actor': 'user', 'decision': 'confirm', 'version': claim['version'],
-                    'reason': _text(payload.get('note')), 'at': _now()}
+                    'reason': _text(payload.get('note')), 'at': _now(), **acknowledgement}
         claim.setdefault('decisions', []).append(decision)
         for row in self._state['report']['claims']:
             if row.get('claimId') == claim['id'] and row.get('claimVersion') == claim['version']:
                 row['status'] = 'confirmed'
         self._history('claim-decision', claimId=claim['id'], **decision)
         self._activity('user', '已确认主张判断：' + claim['statement'])
+
+    @staticmethod
+    def _responsibility(payload):
+        name = payload.get('responsibilityName')
+        if payload.get('responsibilityAcknowledged') is not True or not isinstance(name, str) or not 1 <= len(name.strip()) <= 120:
+            raise ValueError('确认前请签名并明确知悉：确认记录只代表个人判断，不构成科学验证或已阅读证明')
+        return {'responsibilityAcknowledged': True, 'responsibilityName': name.strip(),
+                'acknowledgementVersion': 1, 'scientificValidation': False}
 
     def close(self):
         with self._condition:
@@ -514,13 +523,16 @@ class Engine:
             self._activity("user", "要求修改检查点内容" + ("：" + note if note else "。"))
             self._history("checkpoint-modify", checkpointId=checkpoint["id"], note=note)
             return
+        acknowledgement = self._responsibility(payload)
+        if payload.get('expectedRevision', self._state['revision']) != self._state['revision']:
+            raise ValueError('状态版本已变化，请重新查看检查点再确认')
         kind = checkpoint["type"]
         if kind == "requirements":
             self._state["requirements"] = self._validated_requirements(self._state["requirements"])
-        checkpoint.update(status="confirmed", decision="confirm", userNote=note, resolvedAt=_now())
+        checkpoint.update(status="confirmed", decision="confirm", userNote=note, resolvedAt=_now(), **acknowledgement)
         self._state["activeCheckpointId"] = None
         self._activity("user", "已确认：" + checkpoint["title"] + ("；" + note if note else ""))
-        self._history("checkpoint-confirm", checkpointId=checkpoint["id"], checkpointType=kind, note=note)
+        self._history("checkpoint-confirm", checkpointId=checkpoint["id"], checkpointType=kind, note=note, **acknowledgement)
         if kind == "requirements":
             self._state["stage"] = 1
             self._activity("system", f"已检索当前本机论文库：{len(self._state['papers'])} 篇论文，{len(self._state['evidence'])} 条证据。")
@@ -718,10 +730,21 @@ class Engine:
         node = self._action_node(payload)
         kind = self._kind(payload.get("kind"))
         text = _text(payload.get("text"))
-        if not text:
+        if (kind == 'modify' and node['input'].get('claimId') and isinstance(payload.get('text'), str)
+                and get_claim(self._state, node['input']['claimId']).get('ownerNodeId') == node['id']):
+            text = payload['text']
+        if not text.strip():
             raise ValueError("请填写干预原因或新的任务描述")
         from .claim_runtime import claim_intervention
-        claim_intervention(self, node, dict(payload, text=text))
+        editorial_only = claim_intervention(self, node, dict(payload, text=text))
+        if editorial_only:
+            node['input']['description'] = text
+            if self._state['report'].get('ready'):
+                from .claim_runtime import report_from_claims
+                report_from_claims(self._state)
+            self._history('claim-editorial-edit', nodeId=node['id'], claimId=node['input'].get('claimId'), text=text, affectedIds=[])
+            self._activity('user', '已保存主张排版修订；语义版本与已有证据保持有效。', node)
+            return
         affected = self._affected(node["id"], kind)
         if payload.get("library") is not None:
             self._merge_library(payload["library"])
@@ -1156,6 +1179,7 @@ class Engine:
             context['researchCycle'] = copy.deepcopy(self._state['project'].get('researchCycle'))
             context['taskMode'] = self._state['project'].get('taskMode', 'research')
             context['claimGraph'] = copy.deepcopy(self._state['claimGraph'])
+            context['evidenceApprovals'] = copy.deepcopy(self._state['project'].get('researchEvidenceApprovals', {}))
             context['claim'] = copy.deepcopy(get_claim(self._state, node['input']['claimId'])) if node['input'].get('claimId') else None
             context['upstreamResults'] = [copy.deepcopy(self._get_node(i)) for i in dependencies]
             if self._state['project'].get('researchCycle'):

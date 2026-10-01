@@ -40,6 +40,10 @@ def parse_json_object(text: str) -> dict:
 
 
 class Settings:
+    ROLES = ('main', 'judge', 'redteam')
+    ROLE_NAMES = {'main': '主研究', 'judge': '证据裁判', 'redteam': '对抗复核'}
+    EMPTY_PROVIDER = {'type': 'openai', 'baseUrl': '', 'model': '', 'apiKey': '', 'apiKeyEnv': ''}
+
     def __init__(self, state_dir: Path, source: Path | None):
         self.path = Path(state_dir) / 'config.local.json'
         self.source = Path(source) if source else None
@@ -53,46 +57,160 @@ class Settings:
                 self.data['provider'] = {'type': p.get('type', 'openai'), 'baseUrl': p.get('base_url', ''), 'model': llm.get('active_model') or next(iter(p.get('models', [])), ''), 'apiKey': p.get('api_key', ''), 'apiKeyEnv': p.get('api_key_env', '')}
         if self.path.is_file():
             self.data.update(json.loads(self.path.read_text(encoding='utf-8')))
+        self.data = self._normalize(self.data)
+
+    @classmethod
+    def _normalize(cls, data: dict) -> dict:
+        """Migrate the legacy main slot without copying its credentials to reviewers."""
+        data = copy.deepcopy(data)
+        configured = data.get('providers', {})
+        if not isinstance(configured, dict) or any(role not in cls.ROLES for role in configured):
+            raise ValueError('模型角色必须为 main、judge 或 redteam')
+        providers = {}
+        for role in cls.ROLES:
+            fields = configured.get(role, data.get('provider', {}) if role == 'main' else {})
+            if fields is None:
+                fields = {}
+            if not isinstance(fields, dict):
+                raise ValueError('模型角色配置必须为对象')
+            providers[role] = dict(cls.EMPTY_PROVIDER, **fields)
+        data['providers'] = providers
+        # Retain a shared main-slot alias for existing callers and on-disk readers.
+        data['provider'] = providers['main']
+        return data
+
+    @classmethod
+    def _validate_role(cls, role: str) -> str:
+        if not isinstance(role, str) or role not in cls.ROLES:
+            raise ValueError('模型角色必须为 main、judge 或 redteam')
+        return role
+
+    @staticmethod
+    def _identity(provider: dict) -> dict:
+        parsed = urllib.parse.urlsplit(provider.get('baseUrl', ''))
+        # Hostname/scheme case and a trailing slash do not create independence.
+        host = (parsed.hostname or '').lower()
+        if host in ('127.0.0.1', 'localhost', '::1'):
+            host = 'localhost'
+        if ':' in host:
+            host = '[' + host + ']'
+        port = parsed.port
+        if port and (parsed.scheme.lower(), port) not in (('https', 443), ('http', 80)):
+            host += ':' + str(port)
+        endpoint = urllib.parse.urlunsplit((parsed.scheme.lower(), host, parsed.path.rstrip('/'), '', ''))
+        return {'type': provider.get('type', ''), 'baseUrl': endpoint, 'model': provider.get('model', '')}
+
+    @classmethod
+    def _different_identity(cls, first: dict, second: dict) -> bool:
+        a, b = cls._identity(first), cls._identity(second)
+        return (a['baseUrl'], a['model']) != (b['baseUrl'], b['model'])
 
     def _key(self, provider: dict | None = None) -> str:
-        p = provider or self.data['provider']
+        p = provider if provider is not None else self.data['provider']
         return p.get('apiKey', '') or os.getenv(p.get('apiKeyEnv', ''), '')
+
+    def role_status(self, role: str = 'main') -> dict:
+        """Describe configured routing; readiness is not a live connectivity check."""
+        self._validate_role(role)
+        with self.lock:
+            p = self.data['providers'][role]
+            main = self.data['providers']['main']
+            local = urllib.parse.urlparse(p.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
+            configured = bool(p.get('model') and p.get('baseUrl'))
+            return {k: p.get(k, '') for k in ('type', 'baseUrl', 'model')} | {
+                'hasKey': bool(self._key(p)), 'configured': configured,
+                'ready': bool(configured and (local or self._key(p))),
+                'identity': self._identity(p), 'local': local,
+                'independentFromMain': bool(role != 'main' and configured and main.get('model')
+                                             and main.get('baseUrl') and self._different_identity(p, main)),
+            }
 
     def public(self) -> dict:
         with self.lock:
-            p = self.data['provider']
-            local = urllib.parse.urlparse(p.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
-            return {'mode': self.data['mode'], 'provider': {k: p.get(k, '') for k in ('type', 'baseUrl', 'model')} | {'hasKey': bool(self._key())}, 'sourcePath': str(self.source or ''), 'capabilities': {'modelReady': bool(p.get('model') and p.get('baseUrl') and (local or self._key())), 'tools': ['paper_search', 'paper_read', 'paper_retrieve', 'evidence_lookup', 'facet_read', 'experiment_statistics', 'local_environment', 'python_install', 'python_run', 'artifact_read'], 'experimentalExecution': '本课题独立 Python 环境：环境探测、科研依赖安装、实际脚本执行、超时与暂停、原始日志和产物凭据', 'sourceRetrieval': bool(self.source), 'dsh': False}}
+            providers = {role: self.role_status(role) for role in self.ROLES}
+            review_ready = all(providers[role]['ready'] for role in self.ROLES)
+            distinct = all(providers[role]['independentFromMain'] for role in ('judge', 'redteam'))
+            distinct = distinct and self._different_identity(self.data['providers']['judge'], self.data['providers']['redteam'])
+            return {'mode': self.data['mode'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
+                    'sourcePath': str(self.source or ''),
+                    'presets': [{'id': 'ollama', 'label': 'Ollama 本机接口', 'type': 'openai', 'baseUrl': 'http://127.0.0.1:11434/v1'},
+                                {'id': 'lm-studio', 'label': 'LM Studio 本机接口', 'type': 'openai', 'baseUrl': 'http://127.0.0.1:1234/v1'}],
+                    'capabilities': {'modelReady': providers['main']['ready'], 'evidenceReady': True,
+                                     'roleReady': {role: providers[role]['ready'] for role in self.ROLES},
+                                     'independentReviewReady': bool(review_ready and distinct),
+                                     'independenceBasis': 'configured_endpoint_and_model',
+                                     'independenceNotice': '仅比较已配置的端点和模型名称，不保证不同厂商、模型族或统计独立性。',
+                                     'reproductionScope': 'preflight_and_small_experiments',
+                                     'executionLimits': {'defaultTimeoutSeconds': 90, 'maxTimeoutSeconds': 180,
+                                                         'installTimeoutSeconds': 300, 'localParallel': 1,
+                                                         'resume': 'restart_node', 'gpuConfigured': False,
+                                                         'costEstimateAvailable': False},
+                                     'tools': ['paper_search', 'paper_read', 'paper_retrieve', 'evidence_lookup', 'facet_read', 'experiment_statistics', 'local_environment', 'python_install', 'python_run', 'artifact_read'],
+                                     'experimentalExecution': '本课题独立 Python 环境：环境探测、科研依赖安装、实际脚本执行、超时与暂停、原始日志和产物凭据',
+                                     'sourceRetrieval': bool(self.source), 'dsh': False}}
+
+    @classmethod
+    def _validate_provider(cls, provider: dict, role: str):
+        p = provider
+        if p['type'] not in ('openai', 'anthropic'):
+            raise ValueError('不支持的模型接口类型')
+        # A secondary slot can be explicitly unconfigured; it never inherits main.
+        if role != 'main' and not p['baseUrl'] and not p['model']:
+            return
+        parsed = urllib.parse.urlparse(p['baseUrl'])
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('模型地址不得含凭据、查询参数或片段')
+        if not parsed.hostname or not (parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost', '::1'))):
+            raise ValueError('远程模型地址须使用 HTTPS；本机服务允许 HTTP')
+        try:
+            parsed.port
+        except ValueError:
+            raise ValueError('模型地址端口无效') from None
+        p['baseUrl'] = p['baseUrl'].rstrip('/')
+        if not p.get('model'):
+            raise ValueError('请填写模型名称')
 
     def update(self, payload: dict) -> dict:
         with self.lock:
+            if not isinstance(payload, dict):
+                raise ValueError('运行设置必须为对象')
             data = copy.deepcopy(self.data)
             if 'mode' in payload:
                 if payload['mode'] not in ('evidence', 'llm'):
                     raise ValueError('运行模式必须为 evidence 或 llm')
                 data['mode'] = payload['mode']
-            fields = payload.get('provider') or {}
-            for key in ('type', 'baseUrl', 'model', 'apiKey'):
-                if key in fields:
-                    if not isinstance(fields[key], str):
-                        raise ValueError('模型配置字段必须为文本')
-                    # An empty password in the settings form preserves the existing secret.
-                    if key != 'apiKey' or fields[key]:
-                        data['provider'][key] = fields[key].strip()
-            if fields.get('clearKey'):
-                data['provider']['apiKey'] = ''
-                data['provider']['apiKeyEnv'] = ''
-            p = data['provider']
-            if p['type'] not in ('openai', 'anthropic'):
-                raise ValueError('不支持的模型接口类型')
-            parsed = urllib.parse.urlparse(p['baseUrl'])
-            if parsed.username or parsed.password or parsed.query or parsed.fragment:
-                raise ValueError('模型地址不得含凭据、查询参数或片段')
-            if not parsed.hostname or not (parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost', '::1'))):
-                raise ValueError('远程模型地址须使用 HTTPS；本机服务允许 HTTP')
-            p['baseUrl'] = p['baseUrl'].rstrip('/')
-            if not p.get('model'):
-                raise ValueError('请填写模型名称')
+            changes = payload.get('providers', {})
+            if not isinstance(changes, dict):
+                raise ValueError('模型角色配置必须为对象')
+            changes = dict(changes)
+            if 'provider' in payload:
+                legacy = payload['provider']
+                if not isinstance(legacy, dict):
+                    raise ValueError('模型配置必须为对象')
+                main = changes.get('main', {})
+                if not isinstance(main, dict):
+                    raise ValueError('主研究模型配置必须为对象')
+                changes['main'] = dict(legacy, **main)
+            for role, fields in changes.items():
+                self._validate_role(role)
+                if fields is None and role != 'main':
+                    data['providers'][role] = dict(self.EMPTY_PROVIDER)
+                    continue
+                if not isinstance(fields, dict):
+                    raise ValueError('模型角色配置必须为对象')
+                p = data['providers'][role]
+                for key in ('type', 'baseUrl', 'model', 'apiKey', 'apiKeyEnv'):
+                    if key in fields:
+                        if not isinstance(fields[key], str):
+                            raise ValueError('模型配置字段必须为文本')
+                        # An empty password preserves only this role's existing secret.
+                        if key != 'apiKey' or fields[key].strip():
+                            p[key] = fields[key].strip()
+                if fields.get('clearKey'):
+                    p['apiKey'] = ''
+                    p['apiKeyEnv'] = ''
+                self._validate_provider(p, role)
+            data['provider'] = data['providers']['main']
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix('.tmp')
             temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -103,27 +221,30 @@ class Settings:
     def safe_error(self, error: Exception) -> str:
         text = str(error)
         with self.lock:
-            for key in (self._key(), self.data['provider'].get('apiKey', '')):
-                if key:
-                    text = text.replace(key, '[已隐藏]')
+            secrets = {key for provider in self.data['providers'].values()
+                       for key in (self._key(provider), provider.get('apiKey', ''), os.getenv(provider.get('apiKeyEnv', ''), '')) if key}
+            for key in sorted(secrets, key=len, reverse=True):
+                text = text.replace(key, '[已隐藏]')
         return re.sub(r'(?i)(bearer\s+|api[_-]?key[=: ]+)[^\s,;]+', r'\1[已隐藏]', text)[:600]
 
     def restore(self, previous: dict):
         """Restore an already validated local configuration after a rejected transaction."""
         with self.lock:
             temporary = self.path.with_suffix('.tmp')
+            previous = self._normalize(previous)
             temporary.write_text(json.dumps(previous, ensure_ascii=False, indent=2), encoding='utf-8')
             temporary.replace(self.path)
             self.data = copy.deepcopy(previous)
 
-    def chat(self, messages: list[dict], max_tokens: int = 5500, *, json_mode=False, on_retry=None) -> str:
+    def chat(self, messages: list[dict], max_tokens: int = 5500, *, json_mode=False, on_retry=None, role='main') -> str:
+        self._validate_role(role)
         messages = copy.deepcopy(messages)
         repaired_output, retried_connection = False, False
         # A transport retry must not spend the one JSON-format repair (or vice versa).
         # Each failure class gets one retry, for at most three requests in total.
         for attempt in range(3 if json_mode else 1):
             try:
-                text = self._chat_once(messages, max_tokens, json_mode=json_mode)
+                text = self._chat_once(messages, max_tokens, json_mode=json_mode, role=role)
                 if json_mode:
                     parse_json_object(text)
                 return text
@@ -143,13 +264,16 @@ class Settings:
                 if on_retry:
                     on_retry('模型连接暂时失败，正在重试 1/1；已完成节点保持不变。')
 
-    def _chat_once(self, messages: list[dict], max_tokens: int, *, json_mode=False) -> str:
+    def _chat_once(self, messages: list[dict], max_tokens: int, *, json_mode=False, role='main') -> str:
+        self._validate_role(role)
         with self.lock:
-            p = copy.deepcopy(self.data['provider'])
+            p = copy.deepcopy(self.data['providers'][role])
             key = self._key(p)
+        if not p.get('model') or not p.get('baseUrl'):
+            raise ValueError(f'未配置{self.ROLE_NAMES[role]}模型（{role}）；请在运行设置中单独配置，不能自动使用主研究模型代替')
         local = urllib.parse.urlparse(p['baseUrl']).hostname in ('127.0.0.1', 'localhost', '::1')
         if not key and not local:
-            raise ValueError('未配置模型密钥，请在运行设置中填写；或切换为已有数据核验')
+            raise ValueError(f'未配置{self.ROLE_NAMES[role]}模型密钥，请在运行设置中填写；或切换为已有数据核验')
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
         if p['type'] == 'anthropic':
             body = {'model': p['model'], 'max_tokens': max_tokens, 'temperature': 0.2, 'system': '\n\n'.join(m['content'] for m in messages if m['role'] == 'system'), 'messages': [m for m in messages if m['role'] != 'system']}

@@ -31,11 +31,24 @@ class WorkspaceResearchCoreTests(unittest.TestCase):
 
     def test_model_start_delegates_literature_after_background_instead_of_preretrieving(self):
         self.app._retrieve = lambda *_: self.fail('Model cycle must first expand background')
-        with patch.object(self.workspace.settings, 'public', return_value={'capabilities': {'modelReady': True}}):
+        with patch.object(self.workspace.settings, 'public', return_value={'mode': 'llm', 'capabilities': {'modelReady': True}}):
             self.workspace._run(self.task_id, self.workspace._records[self.task_id]['token'])
         state = self.app.engine.snapshot()
         self.assertTrue(state['project'].get('researchCycle'))
         self.assertTrue(state['project'].get('paperResearch'))
+
+    def test_evidence_mode_runs_existing_library_without_any_network_or_model_call(self):
+        self.workspace.settings.update({'mode': 'evidence', 'provider': {'apiKey': 'configured-cloud-key'}})
+        with patch.object(self.app, '_retrieve', side_effect=AssertionError('must not retrieve')) as retrieve, \
+             patch.object(self.workspace.settings, 'chat', side_effect=AssertionError('must not call model')) as chat:
+            self.workspace._run(self.task_id, self.workspace._records[self.task_id]['token'])
+        state = self.app.engine.snapshot()
+        self.assertEqual(state['project']['mode'], 'evidence')
+        self.assertFalse(state['project'].get('paperResearch'))
+        self.assertFalse(state['project'].get('allowNewSearch'))
+        self.assertNotEqual(self.workspace._records[self.task_id]['phase'], 'failed')
+        retrieve.assert_not_called()
+        chat.assert_not_called()
 
     def seed_decision(self):
         with self.app.engine._lock:
