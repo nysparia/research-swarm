@@ -30,10 +30,10 @@ export function Discussion({ artifact, detail, onProposal, label = '询问 / 深
     const poll = async () => { try { const next = await api<Interaction>(taskPath(detail.task.id, `/interactions/${encodeURIComponent(result.id)}`)); if (live) { setResult(next); setError(''); } } catch (e) { if (live) setError(messageOf(e)); } finally { if (live) timer = window.setTimeout(poll, 1800); } };
     timer = window.setTimeout(poll, 1000); return () => { live = false; window.clearTimeout(timer); };
   }, [result?.id, result?.status, detail.task.id]);
-  const send = async () => {
+  const send = async (requestedKind: InteractionKind = kind) => {
     setError(''); setBusy(true);
     try {
-      const request = interactionPayload(shown, kind, text, replacement, nodeId);
+      const request = interactionPayload(shown, requestedKind, text, replacement, nodeId);
       const value = await api<Interaction>(taskPath(detail.task.id, '/interactions'), request);
       if (!mounted.current) return;
       setResult(value);
@@ -41,18 +41,21 @@ export function Discussion({ artifact, detail, onProposal, label = '询问 / 深
     } catch (e) { if (mounted.current) setError(messageOf(e)); }
     finally { if (mounted.current) setBusy(false); }
   };
-  return <Popover open={open} trigger="click" placement="bottomRight" autoAdjustOverflow onOpenChange={next => { if (next && !open) { setShown(artifact); setResult(previous => interactionForArtifact(previous, artifact)); } setOpen(next); }} styles={{ container: { padding: 0, width: 'min(430px, calc(100vw - 32px))' } }} content={<section className="sw-discussion" role="dialog" aria-label="围绕当前内容讨论">
-    <header><div className="flex items-center gap-2"><Avatar small /><strong>就在这里，一起推敲</strong></div><Button icon="close" aria-label="关闭局部讨论" onClick={() => { setOpen(false); trigger.current?.focus(); }} /></header>
+  return <Popover open={open} trigger="click" placement="bottom" autoAdjustOverflow onOpenChange={next => { if (next && !open) { setShown(artifact); setResult(previous => interactionForArtifact(previous, artifact)); } setOpen(next); }} styles={{ container: { padding: 0, width: 'min(390px, calc(100vw - 32px))' } }} content={<section className="sw-discussion" role="dialog" aria-label="围绕当前内容讨论">
+    <header><strong className="sw-discussion-pill">{shown.kind === 'claim' ? '围绕这条主张' : label === '关于这组对照' ? label : '关于这份产物'}</strong><Button icon="close" aria-label="关闭局部讨论" onClick={() => { setOpen(false); trigger.current?.focus(); }} /></header>
     <div className="sw-discussion-target"><Icon name="link" /><span>{shown.title}</span><small>v{shown.revision}</small></div>
     {artifact.revision !== shown.revision && <p className="sw-notice">内容已更新。此次讨论仍引用你打开时的版本。<button onClick={() => { setShown(artifact); setResult(previous => interactionForArtifact(previous, artifact)); }}>使用最新版本</button></p>}
-    <div className="sw-segments" aria-label="讨论方式">{([['ask', '问一问'], ['deepen', '深入研究'], ['challenge', '提出质疑'], ['revise', '修改主张']] as const).map(([value, title]) => <button key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setError(''); }} disabled={busy || result?.status === 'running' || (value === 'revise' && shown.kind !== 'claim')}>{title}</button>)}</div>
+    <details className="sw-discussion-advanced"><summary>更多研究操作</summary><div className="sw-segments" aria-label="讨论方式">{([['ask', '问一问'], ['deepen', '深入研究'], ['challenge', '提出质疑'], ['revise', '修改主张']] as const).map(([value, title]) => <button key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setError(''); }} disabled={busy || result?.status === 'running' || (value === 'revise' && shown.kind !== 'claim')}>{title}</button>)}</div></details>
     {kind !== 'ask' && shown.nodeIds.length !== 1 && <label className="sw-field">由哪个节点继续研究<select value={nodeId} onChange={event => setNodeId(event.target.value)}><option value="">选择负责节点</option>{shown.nodeIds.map(id => <option key={id} value={id}>{detail.state?.nodes.find(n => n.id === id)?.title || id}</option>)}</select></label>}
     {kind === 'revise' && <label className="sw-field">修改后的完整主张<textarea value={replacement} onChange={event => setReplacement(event.target.value)} rows={3} /></label>}
-    {result?.reply && <div className="sw-discussion-reply"><span className="sw-eyebrow">{result.source === 'model' ? '研究助手' : '依据已有记录'} · v{result.target.revision}{result.stale || result.target.revision !== artifact.revision ? ' · 引用版本已有变化' : ''}</span><Markdown text={result.reply} /></div>}
+    {result?.text && <div className="sw-local-user">{result.text}</div>}
+    {result?.reply ? <div className="sw-local-assistant"><Avatar small /><div className="sw-discussion-reply"><span className="sw-eyebrow">{result.source === 'model' ? '研究助手' : '依据已有记录'} · v{result.target.revision}{result.stale || result.target.revision !== artifact.revision ? ' · 历史版本' : ''}</span><Markdown text={result.reply} /></div></div> : !result && <div className="sw-local-assistant"><Avatar small /><p>可以围绕这里的数据、依据或研究方向继续讨论。</p></div>}
+
     {result?.status === 'running' && <p className="sw-loading" role="status"><span className="sw-spinner" />正在读取这份内容及其依据…</p>}
     {(error || result?.error) && <ErrorNote>{error || result?.error}</ErrorNote>}
-    <textarea className="sw-local-input" aria-label="局部讨论内容" placeholder={kind === 'ask' ? '这里的数据说明了什么？' : kind === 'deepen' ? '这个方向还需要补充什么证据或实验？' : '写下修改原因或需要核查的问题…'} value={text} onChange={event => setText(event.target.value)} rows={3} />
-    <footer><span>{kind === 'ask' ? '只讨论当前内容' : '先查看影响，再确认执行'}</span><Button variant="primary" icon="send" busy={busy || result?.status === 'running'} disabled={!text.trim()} onClick={() => { void send(); }}>{kind === 'ask' ? '发送' : '查看影响'}</Button></footer>
+    <textarea className="sw-local-input" aria-label="局部讨论内容" placeholder={kind === 'ask' ? '这里的数据说明了什么？' : kind === 'deepen' ? '这个方向还需要补充什么证据或实验？' : '写下修改原因或需要核查的问题…'} value={text} onChange={event => setText(event.target.value)} rows={2} />
+    <footer>{kind === 'ask' ? <><Button variant="outline" busy={busy || result?.status === 'running'} disabled={!text.trim()} onClick={() => {void send('ask');}}>追问</Button><Button variant="primary" busy={busy || result?.status === 'running'} disabled={!text.trim() || shown.status === 'stale' || !shown.nodeIds.length} title={!shown.nodeIds.length ? '该产物尚未关联研究节点，可先追问记录或在具体主张旁深入。' : undefined} onClick={() => {if (shown.nodeIds.length === 1) void send('deepen'); else setKind('deepen');}}>沿此深入</Button></> : <><Button onClick={() => setKind('ask')}>返回追问</Button><Button variant="primary" busy={busy || result?.status === 'running'} disabled={!text.trim()} onClick={() => {void send();}}>查看影响</Button></>}</footer>
+
   </section>}><button ref={trigger} className="sw-button sw-button-quiet sw-discuss-trigger"><Icon name="chat" />{label}</button></Popover>;
 }
 

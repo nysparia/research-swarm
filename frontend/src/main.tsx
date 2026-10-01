@@ -5,6 +5,7 @@ import zhCN from 'antd/locale/zh_CN';
 import 'antd/dist/reset.css';
 import './conversation.css';
 import './workbench/workbench.css';
+import './workbench/reference.css';
 import App from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
