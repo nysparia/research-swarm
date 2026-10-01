@@ -67,3 +67,5 @@ export const statusLabels: Record<string, string> = {
 export const shortTime = (at?: string) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
 export const duration = (ms?: number | null) => typeof ms === 'number' ? ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} 秒` : `${Math.floor(ms / 60000)} 分 ${Math.floor(ms / 1000) % 60} 秒` : '—';
 export const safeDownload = (url?: unknown) => typeof url === 'string' && (/^\/api\//.test(url) || /^https?:\/\//i.test(url)) ? url : undefined;
+
+export const canControlResearch = (detail?: Pick<TaskDetail, 'phase' | 'state'> | null) => Boolean(detail && !['empty', 'requirements', 'completed'].includes(detail.phase) && (detail.state || detail.phase === 'retrieving'));

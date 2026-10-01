@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { metricRows, moduleTabs, interactionPayload, canResumeJob, proposalIsCurrent, changedBlocks, interactionForArtifact, rebaseNotebook, notebookSubmissionUnchanged } from '../src/workbench/state.ts';
+import { metricRows, moduleTabs, interactionPayload, canResumeJob, proposalIsCurrent, changedBlocks, interactionForArtifact, rebaseNotebook, notebookSubmissionUnchanged, canControlResearch } from '../src/workbench/state.ts';
 
 const artifact = (patch = {}) => ({ id: 'claim:c1', revision: 4, kind: 'claim', content: { statement: 'Original claim' }, nodeIds: ['n1'], status: 'unassessed', ...patch });
 test('metrics only expose finite recorded values, never invent series or turn strings into numbers', () => {
@@ -65,4 +65,12 @@ test('a confirmed preview may only clear the exact notebook edits it contained',
   assert.ok(notebookSubmissionUnchanged(submitted, submitted));
   assert.ok(!notebookSubmissionUnchanged(submitted, { ...submitted, edits: { a: 'AB' } }));
   assert.ok(!notebookSubmissionUnchanged(submitted, { ...submitted, added: [{ content: 'new note' }] }));
+});
+
+test('old paused engine cannot bypass new requirements or restart a completed round', () => {
+  const oldState = { paused: true, status: 'completed' };
+  assert.equal(canControlResearch({ phase: 'requirements', state: oldState }), false);
+  assert.equal(canControlResearch({ phase: 'completed', state: oldState }), false);
+  assert.equal(canControlResearch({ phase: 'researching', state: { paused: true } }), true);
+  assert.equal(canControlResearch({ phase: 'retrieving', state: null }), true);
 });
