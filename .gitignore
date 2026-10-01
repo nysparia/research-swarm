@@ -19,3 +19,4 @@ config.local.json
 work/
 benchmark-results/
 .superpowers/
+.agents/
