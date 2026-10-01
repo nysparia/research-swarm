@@ -2,6 +2,12 @@ import { useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { BlurText } from '../BlurReveal';
 import { statusLabels } from './state';
 
+const agentPortraits = [
+  { src: new URL('../assets/avatars/sara.png', import.meta.url).href, background: '#eef4ff' },
+  { src: new URL('../assets/avatars/trevor.png', import.meta.url).href, background: '#fff3e7' },
+  { src: new URL('../assets/avatars/puck.png', import.meta.url).href, background: '#eaf5ed' },
+];
+
 const paths: Record<string, string> = {
   more: 'M5 12h.01M12 12h.01M19 12h.01', attach: 'm8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L13 2', edit: 'm4 16 12-12 4 4-12 12H4v-4ZM14 6l4 4', target: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3M22 12h-3M12 22v-3M2 12h3M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   plus: 'M12 5v14M5 12h14', arrow: 'M7 17 17 7M7 7h10v10', send: 'm3 3 19 9-19 9 4-9-4-9Zm4 9h15',
@@ -29,8 +35,9 @@ export function Badge({ status, text }: { status: string; text?: string }) { ret
 export function Empty({ icon = 'layers', title, children }: { icon?: string; title: string; children?: ReactNode }) { return <div className="sw-empty"><span className="sw-empty-icon"><Icon name={icon} /></span><h3>{title}</h3><div>{children}</div></div>; }
 export function ErrorNote({ children, onRetry }: { children: ReactNode; onRetry?: () => void }) { return <div className="sw-error" role="alert"><span>{children}</span>{onRetry && <Button icon="retry" onClick={onRetry}>重试</Button>}</div>; }
 export function Avatar({ index = 0, small = false }: { index?: number; small?: boolean }) {
-  const colors = ['#dfece7', '#e2e9f1', '#f1e5d9', '#e9e3f2'];
-  return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="16" fill={colors[index % colors.length]} /><path d="M7 48c0-13 8-19 17-19s17 6 17 19" fill={['#415e57', '#475a72', '#82694f', '#6e5d7d'][index % 4]} /><path d="m18 31 6 7 6-7" fill="#fff" /><ellipse cx="24" cy="21" rx="10" ry="12" fill="#e8bb99" /><path d={index % 2 ? 'M13 22C10 4 37 1 35 23l-6-12-11 8-5 3Z' : 'M13 23C10 9 19 6 26 7c10 0 10 11 9 17l-4-10-15 3-3 6Z'} fill="#394044" /><path d="M20 22h1m6 0h1m-6 6h4" stroke="#705548" strokeWidth="1.7" strokeLinecap="round" />{index % 3 === 0 && <path d="M16 21h7v5h-7zm10 0h7v5h-7m-3 2h3" stroke="#536065" fill="none" />}</svg>;
+  const portrait = agentPortraits[index % agentPortraits.length] || agentPortraits[0];
+  // Display the smiling portrait's face from the unchanged, locally bundled sheet.
+  return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="0 380 300 300" aria-hidden="true" focusable="false" style={{ overflow: 'hidden' }}><title>Portrait graphics created by RPG Action · ZeNeRIA29 · CC BY 3.0</title><rect x="0" y="380" width="300" height="300" fill={portrait.background} /><image href={portrait.src} width="900" height="760" /></svg>;
 }
 export function Composer({ value, onChange, onSend, busy, centered = false, onAttach, onHistory }: { value: string; onChange: (value: string) => void; onSend: () => void; busy: boolean; centered?: boolean; onAttach?: () => void; onHistory?: () => void }) {
   const composing = useRef(false);

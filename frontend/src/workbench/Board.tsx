@@ -16,8 +16,8 @@ export interface BoardProps {
   onNode: (node: VisualNode) => void; onPaper: (id: string) => void; onTab: (tab: string) => void; onExport?: () => void; onContinue?: () => void;
 }
 export function AgentStrip({ detail, onNode }: Pick<BoardProps, 'detail' | 'onNode'>) {
-  return <div className="sw-agent-strip" aria-label="Agent 当前活动">{representativeAgents(detail.state?.nodes || []).map(({node, role}, i) => <button key={node.id} className="sw-agent" title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} onClick={() => onNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}>
-    <span className="sw-agent-bubble"><BlurText kind="status" text={node.logs.at(-1)?.message || node.title} /></span><Avatar index={i} /><small><i className={'sw-agent-dot ' + node.status} />{role}</small>
+  return <div className="sw-agent-strip" aria-label="Agent 当前活动">{representativeAgents(detail.state?.nodes || []).map(({node, role}) => <button key={node.id} className="sw-agent" title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} onClick={() => onNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}>
+    <span className="sw-agent-bubble"><BlurText kind="status" text={node.logs.at(-1)?.message || node.title} /></span><Avatar index={role === '实验' ? 1 : role === '文献' ? 2 : 0} /><small><i className={'sw-agent-dot ' + node.status} />{role}</small>
   </button>)}</div>;
 }
 export function MetricDisplay({ metrics }: { metrics: unknown }) {
