@@ -60,7 +60,7 @@ export function notebookSubmissionUnchanged(submitted: { edits: Record<string, s
 }
 export const statusLabels: Record<string, string> = {
   empty: '新任务', requirements: '准备研究', retrieving: '检索资料', researching: '研究中',
-  pending: '待执行', queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', waiting_user: '等待你确认',
+  idle: '待运行', pending: '待执行', queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', waiting_user: '等待你确认',
   cancelled: '已取消', timed_out: '超时', interrupted: '已中断', stale: '已失效',
   supported: '证据支持', refuted: '存在反证', mixed: '证据混合', inconclusive: '尚无定论', unassessed: '待验证', draft: '草稿', confirmed: '用户已确认',
 };

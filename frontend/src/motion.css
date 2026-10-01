@@ -4,3 +4,6 @@
 .blur-long{display:inline-block;max-width:100%;white-space:inherit;vertical-align:baseline}
 @keyframes research-blur-enter{from{opacity:0;filter:blur(14px);transform:translateY(4px)}to{opacity:1;filter:blur(0);transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){.graph-node-tooltip{animation:none}.blur-glyph{transform:none!important;filter:none!important}}
+
+/* Observe the full paragraph, not only the baseline of its inline child. */
+.blur-text-long{display:inline-block;max-width:100%;vertical-align:top}

@@ -79,7 +79,7 @@ export const BlurText = memo(function BlurText({ text, kind = 'content', classNa
   }
   // Long paragraphs enter as a block; their content is still blurred, without thousands of layers.
   const long = value.tokens.length > 240;
-  return <span ref={ref} className={`blur-text ${className}`} data-blur-owned="true"><span className="motion-readable">{text}</span><span aria-hidden="true" style={{ visibility: visible ? undefined : 'hidden' }}>{long ? <LongReveal text={text} kind={kind} visible={visible} /> : groups.map(group => <span className={group.length > 1 ? 'blur-word' : 'blur-unit'} key={Math.min(...group.map(token => token.id))}>{group.map(token => <Glyph key={token.id} token={token} visible={visible} kind={kind} index={Math.max(0, token.id - firstNew)} />)}</span>)}</span></span>;
+  return <span ref={ref} className={`blur-text ${long ? 'blur-text-long' : ''} ${className}`} data-blur-owned="true"><span className="motion-readable">{text}</span><span aria-hidden="true" style={{ visibility: visible ? undefined : 'hidden' }}>{long ? <LongReveal text={text} kind={kind} visible={visible} /> : groups.map(group => <span className={group.length > 1 ? 'blur-word' : 'blur-unit'} key={Math.min(...group.map(token => token.id))}>{group.map(token => <Glyph key={token.id} token={token} visible={visible} kind={kind} index={Math.max(0, token.id - firstNew)} />)}</span>)}</span></span>;
 });
 
 function LongReveal({ text, kind, visible }: { text: string; kind: 'content' | 'status'; visible: boolean }) {
