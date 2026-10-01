@@ -1,16 +1,17 @@
-Agent portrait artwork
+Agent portraits — Umamusume: Pretty Derby / ウマ娘 プリティーダービー
 
-Portrait graphics created by RPG Action.
-Graphics designed by ZeNeRIA29.
+Character illustrations: © Cygames, Inc.
+Source: https://umamusume.jp/character
+Downloaded: 2026-10-02
 
-Source: Sara, Trevor, Puck Anime Portrait and Expressions
-https://opengameart.org/content/sara-trevor-puck-anime-portrait-and-expressions
-Artist: https://zeneria29.deviantart.com/
-RPG Action: http://peterlzy.wix.com/rpgaction
+Mejiro McQueen / 目白麦昆 — Theory / research assistant
+https://umamusume.jp/character/mejiromcqueen
+Agnes Tachyon / 爱丽速子 — Experiments
+https://umamusume.jp/character/agnestachyon
+Rice Shower / 米浴 — Literature
+https://umamusume.jp/character/riceshower
 
-License: Creative Commons Attribution 3.0 Unported (CC BY 3.0)
-https://creativecommons.org/licenses/by/3.0/
-
-The original PNG sheets are unchanged. The interface displays a cropped smiling face,
-with a pastel background and a rounded frame. No endorsement is implied.
-Artwork license applies independently from the application code license.
+The original PNG portraits are unchanged. The interface frames their faces in
+circular viewports with pastel backgrounds. All portraits are bundled locally.
+Artwork and character rights belong to Cygames, Inc. The application code license
+does not apply to this artwork. No affiliation or endorsement is implied.

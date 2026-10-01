@@ -3,9 +3,9 @@ import { BlurText } from '../BlurReveal';
 import { statusLabels } from './state';
 
 const agentPortraits = [
-  { src: new URL('../assets/avatars/sara.png', import.meta.url).href, background: '#eef4ff' },
-  { src: new URL('../assets/avatars/trevor.png', import.meta.url).href, background: '#fff3e7' },
-  { src: new URL('../assets/avatars/puck.png', import.meta.url).href, background: '#eaf5ed' },
+  { name: '目白麦昆', src: new URL('../assets/avatars/mejiro-mcqueen.png', import.meta.url).href, background: '#f0edfb' },
+  { name: '爱丽速子', src: new URL('../assets/avatars/agnes-tachyon.png', import.meta.url).href, background: '#fff3e7' },
+  { name: '米浴', src: new URL('../assets/avatars/rice-shower.png', import.meta.url).href, background: '#eef2fc' },
 ];
 
 const paths: Record<string, string> = {
@@ -36,8 +36,8 @@ export function Empty({ icon = 'layers', title, children }: { icon?: string; tit
 export function ErrorNote({ children, onRetry }: { children: ReactNode; onRetry?: () => void }) { return <div className="sw-error" role="alert"><span>{children}</span>{onRetry && <Button icon="retry" onClick={onRetry}>重试</Button>}</div>; }
 export function Avatar({ index = 0, small = false }: { index?: number; small?: boolean }) {
   const portrait = agentPortraits[index % agentPortraits.length] || agentPortraits[0];
-  // Display the smiling portrait's face from the unchanged, locally bundled sheet.
-  return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="0 380 300 300" aria-hidden="true" focusable="false" style={{ overflow: 'hidden' }}><title>Portrait graphics created by RPG Action · ZeNeRIA29 · CC BY 3.0</title><rect x="0" y="380" width="300" height="300" fill={portrait.background} /><image href={portrait.src} width="900" height="760" /></svg>;
+  // Frame the face from the unchanged, locally bundled official character portrait.
+  return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="30 30 236 236" aria-hidden="true" focusable="false" style={{ overflow: 'hidden' }}><title>{portrait.name} · ウマ娘 プリティーダービー · © Cygames, Inc.</title><rect x="30" y="30" width="236" height="236" fill={portrait.background} /><image href={portrait.src} width="296" height="389" /></svg>;
 }
 export function Composer({ value, onChange, onSend, busy, centered = false, onAttach, onHistory }: { value: string; onChange: (value: string) => void; onSend: () => void; busy: boolean; centered?: boolean; onAttach?: () => void; onHistory?: () => void }) {
   const composing = useRef(false);

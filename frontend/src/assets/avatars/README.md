@@ -1,20 +1,23 @@
-# Agent portraits
+# Agent portraits — Umamusume
 
-Portrait graphics created by RPG Action.
-Graphics designed by ZeNeRIA29.
+Official character illustrations from **ウマ娘 プリティーダービー / Umamusume: Pretty Derby**.
+Artwork and characters: **© Cygames, Inc.**
 
-- Source: [Sara, Trevor, Puck Anime Portrait and Expressions](https://opengameart.org/content/sara-trevor-puck-anime-portrait-and-expressions)
-- Artist: [ZeNeRIA29](https://zeneria29.deviantart.com/)
-- Commissioner: [RPG Action](http://peterlzy.wix.com/rpgaction)
-- License: [Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/)
+- Source: [Official character catalogue](https://umamusume.jp/character)
 - Downloaded: 2026-10-02
 
-| Local file | Original download | UI role |
+| Local file | Character / source page | UI role |
 | --- | --- | --- |
-| sara.png | https://opengameart.org/sites/default/files/portrait21.png | Theory / research assistant |
-| trevor.png | https://opengameart.org/sites/default/files/portrait24.png | Experiments |
-| puck.png | https://opengameart.org/sites/default/files/portrait25.png | Literature |
+| mejiro-mcqueen.png | [Mejiro McQueen / 目白麦昆](https://umamusume.jp/character/mejiromcqueen) | Theory / research assistant |
+| agnes-tachyon.png | [Agnes Tachyon / 爱丽速子](https://umamusume.jp/character/agnestachyon) | Experiments |
+| rice-shower.png | [Rice Shower / 米浴](https://umamusume.jp/character/riceshower) | Literature |
 
-The PNG files are unchanged originals, renamed for clarity. The Avatar component displays the smiling face through an SVG viewport, with a pastel background and rounded UI frame. These presentation changes do not imply endorsement by the artists. Vite bundles the images into local assets; no image service is called at runtime.
+Original downloads linked by the official catalogue:
 
-The project code license does not replace this artwork's CC BY 3.0 license. Retain this credit and source information when distributing the artwork with the project.
+- https://images.microcms-assets.io/assets/973fc097984b400db8729642ddff5938/b54190968d3644ecb42a708d0f6a084c/mejiromcqueen_list.png
+- https://images.microcms-assets.io/assets/973fc097984b400db8729642ddff5938/0b6e09c2dbdb4cacb16c87571f3b257b/agnestachyon_list.png
+- https://images.microcms-assets.io/assets/973fc097984b400db8729642ddff5938/8c203ea11f8a47d0b58296fdcdadd82b/riceshower_01_list.png
+
+PNG files are unchanged originals, renamed for clarity. The Avatar component frames the face in a circular viewport with a pastel background. Images are bundled locally by Vite; no external image request is made at runtime.
+
+These illustrations are third-party copyrighted artwork. The application's code license does not apply to them, and this attribution does not grant an open-source artwork license or imply affiliation with Cygames.
