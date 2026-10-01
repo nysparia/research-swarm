@@ -57,7 +57,10 @@ class LocalResearchTools:
     names = ('local_environment', 'python_install', 'python_run', 'artifact_read')
 
     def __init__(self, artifact_root: Path, python_executable=None):
-        self.root = Path(artifact_root).resolve()
+        # Keep the caller's absolute spelling (including Windows 8.3 paths)
+        # for task-local environment variables and relative artifact records.
+        # Security checks resolve paths separately before comparing boundaries.
+        self.root = Path(artifact_root).absolute()
         self.root.mkdir(parents=True, exist_ok=True)
         self.python = Path(python_executable) if python_executable else None
         self._environment_lock = threading.Lock()

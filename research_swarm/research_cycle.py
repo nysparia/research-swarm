@@ -225,14 +225,16 @@ def _hypotheses(engine, items, origin=None):
 
 def _experiment_data(engine, node, token, protocol, errors=None):
     errors = errors if errors is not None else []
+    artifact_root = Path(engine._artifact_root)
+    resolved_root = artifact_root.resolve()
     executions = [r for r in token.get('toolExecutions', []) if r.get('tool') == 'python_run' and r.get('status') == 'completed']
     if not executions: errors.append('本次节点没有成功的 python_run 凭据')
     for execution in reversed(executions):
         candidates = [a for a in execution.get('artifacts') or [] if Path(a.get('path', '')).name == 'metrics.json']
         if not candidates: errors.append('成功进程未保存 metrics.json 产物')
         for artifact in candidates:
-            path = (engine._artifact_root / str(artifact.get('path', ''))).resolve()
-            if path.name != 'metrics.json' or not path.is_relative_to(engine._artifact_root / 'runs') or not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+            path = (artifact_root / str(artifact.get('path', ''))).resolve()
+            if path.name != 'metrics.json' or not path.is_relative_to(resolved_root / 'runs') or not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
                 errors.append('metrics.json 缺失、越界或超过 4 MiB')
                 continue
             try:
@@ -262,7 +264,7 @@ def _experiment_data(engine, node, token, protocol, errors=None):
                 raw = protocol['rawData']
                 raw_artifact = next((a for a in execution.get('artifacts', []) if Path(a.get('path', '')).name == raw['file']), None)
                 if not raw_artifact: raise ValueError('本次进程未保存协议指定的 ' + raw['file'])
-                raw_path = (engine._artifact_root / raw_artifact['path']).resolve()
+                raw_path = (artifact_root / raw_artifact['path']).resolve()
                 if not raw_path.is_relative_to(path.parent) or not raw_path.is_file() or raw_path.stat().st_size > 4*1024*1024:
                     raise ValueError('原始 CSV 缺失、越界或超过 4 MiB')
                 raw_bytes = raw_path.read_bytes()
@@ -282,8 +284,8 @@ def _experiment_data(engine, node, token, protocol, errors=None):
                     if not math.isclose(actual, data[key], rel_tol=1e-6, abs_tol=1e-9):
                         statistic = '中位数 median' if spec['statistic'] == 'median' else spec['statistic']
                         raise ValueError(f'{key} 的 {statistic} 与原始测量不匹配：CSV 重算={actual:g}，metrics.json={data[key]:g}；检查 column/where 分组映射')
-                script_path = (engine._artifact_root / str(execution.get('script', ''))).resolve()
-                if not script_path.is_relative_to(engine._artifact_root / 'runs') or not script_path.is_file(): raise ValueError('执行脚本缺失或越界')
+                script_path = (artifact_root / str(execution.get('script', ''))).resolve()
+                if not script_path.is_relative_to(resolved_root / 'runs') or not script_path.is_file(): raise ValueError('执行脚本缺失或越界')
                 if hashlib.sha256(script_path.read_bytes()).hexdigest() != execution.get('scriptSha256'): raise ValueError('执行脚本内容哈希与执行凭据不一致')
                 hashes = {execution['script']: execution['scriptSha256'], artifact['path']: artifact['sha256'], raw_artifact['path']: raw_artifact['sha256']}
                 data['_provenance'] = {'script': execution['script'], 'metricsArtifact': artifact['path'], 'rawDataArtifact': raw_artifact['path'], 'artifactHashes': hashes}
@@ -319,28 +321,32 @@ def _bind_return(output, ids):
 
 def _artifacts_intact(engine, hashes):
     if not hashes: return False
+    artifact_root = Path(engine._artifact_root)
+    resolved_root = artifact_root.resolve()
     for relative, expected in hashes.items():
-        path = (engine._artifact_root / relative).resolve()
+        path = (artifact_root / relative).resolve()
         try:
-            if not path.is_relative_to(engine._artifact_root / 'runs') or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            if not path.is_relative_to(resolved_root / 'runs') or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 return False
         except OSError: return False
     return True
 
 
 def _existing_sources(engine, ids, demand):
+    artifact_root = Path(engine._artifact_root)
+    resolved_root = artifact_root.resolve()
     by_id = {e['id']: e for e in engine._state['evidence']}
     for eid in ids:
         evidence = by_id[eid]
         if not evidence.get('locator') or not evidence.get('quote'): return False
         if evidence.get('type') == 'experiment':
             approval = engine._state['project'].get('researchEvidenceApprovals', {}).get(eid)
-            receipt = (engine._artifact_root / evidence['locator']).resolve()
+            receipt = (artifact_root / evidence['locator']).resolve()
             if (evidence.get('executionStatus') != 'completed' or not approval or
                     not approval.get('review', {}).get('independent') or
                     approval.get('review', {}).get('status') != 'completed' or
                     approval.get('review', {}).get('role') != 'redteam' or
-                    not receipt.is_relative_to(engine._artifact_root / 'runs') or not receipt.is_file() or
+                    not receipt.is_relative_to(resolved_root / 'runs') or not receipt.is_file() or
                     hashlib.sha256(receipt.read_bytes()).hexdigest() != evidence.get('sha256')):
                 return False
             if any(approval['dataDemand'].get(k) != demand.get(k) for k in ('metric', 'definition', 'acceptance', 'scope')):

@@ -74,7 +74,9 @@ def _json_object(path: Path) -> dict:
 
 def _absolute(root: Path, value) -> Path:
     path = Path(str(value))
-    return (path if path.is_absolute() else root / path).resolve()
+    # Preserve the caller's Windows path spelling while still collapsing `..`.
+    # Callers that enforce containment resolve the candidate and root together.
+    return Path(os.path.abspath(path if path.is_absolute() else root / path))
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -89,7 +91,7 @@ class Library:
     """Adapter for a source project directory, task directory, or SQLite file."""
 
     def __init__(self, source: str | Path):
-        self.source = Path(source).expanduser().resolve()
+        self.source = Path(source).expanduser().absolute()
         self._retrieve_lock = threading.Lock()
 
     def _layout(self) -> dict:
@@ -109,18 +111,18 @@ class Library:
             raise ValueError("原项目当前任务 ID 含无效路径字符")
         active_task = (_absolute(root, task_cfg.get("root") or "tasks") / str(active_id)) if active_id else None
         active_db = ((active_task / "data" / "paper_research.sqlite") if active_task else
-                     _absolute(root, storage.get("db_path") or "data/paper_research.sqlite")).resolve()
+                     _absolute(root, storage.get("db_path") or "data/paper_research.sqlite"))
         if is_db:
             db = source
             task = db.parent.parent if (db.parent.parent / "task.json").is_file() else None
         elif (source / "task.json").is_file():
             task = source
-            db = (task / "data" / "paper_research.sqlite").resolve()
+            db = task / "data" / "paper_research.sqlite"
         else:
             task, db = active_task, active_db
             # Unconfigured legacy libraries sometimes keep their database at root.
             if not cfg and not db.is_file() and (root / "paper_research.sqlite").is_file():
-                db = (root / "paper_research.sqlite").resolve()
+                db = root / "paper_research.sqlite"
                 active_db = db
         meta = _json_object(task / "task.json") if task else {}
         selected_id = meta.get("topic_id") or (active_id if db == active_db else None)
@@ -131,10 +133,10 @@ class Library:
             configured_topic = min(topics, key=lambda t: _number(t.get("priority"), 99))
         roots = []
         if task:
-            roots.append((task / "papers").resolve())
+            roots.append(task / "papers")
         if is_db and not task:
             local_root = db.parent.parent if db.parent.name == "data" else db.parent
-            roots.append((local_root / "papers").resolve())
+            roots.append(local_root / "papers")
         roots.append(_absolute(root, storage.get("pdf_dir") or "papers"))
         return {"root": root, "db": db, "activeDb": active_db, "task": task,
                 "meta": meta, "configuredTopic": configured_topic,
@@ -197,6 +199,7 @@ class Library:
         if stem.isdecimal() and paper_id.isdecimal() and int(stem) != int(paper_id):
             return None
         roots = layout["pdfRoots"]
+        resolved_roots = tuple(root.resolve() for root in roots)
         candidates = [root / name for root in roots]
         recorded = Path(stored)
         if recorded.is_absolute():
@@ -205,15 +208,15 @@ class Library:
             candidates.extend((layout["root"] / recorded, layout["db"].parent / recorded))
         for candidate in candidates:
             try:
-                path = candidate.resolve(strict=True)
-                if path.suffix.lower() != ".pdf" or not path.is_file():
+                resolved = candidate.resolve(strict=True)
+                if resolved.suffix.lower() != ".pdf" or not resolved.is_file():
                     continue
-                if not any(_inside(path, root) for root in roots):
+                if not any(_inside(resolved, root) for root in resolved_roots):
                     continue
-                with path.open("rb") as handle:
+                with resolved.open("rb") as handle:
                     header = handle.read(1024)
                 if b"%PDF-" in header:
-                    return path
+                    return candidate
             except (OSError, ValueError, RuntimeError):
                 continue
         return None
