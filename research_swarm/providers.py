@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import copy
+import contextvars
+from contextlib import contextmanager
 import json
 import os
 import re
+import sqlite3
 import threading
 import urllib.error
 import urllib.parse
@@ -50,6 +53,8 @@ class Settings:
         self.path = Path(state_dir) / 'config.local.json'
         self.source = Path(source) if source else None
         self.lock = threading.RLock()
+        self.usage_path = Path(state_dir) / 'provider-usage.sqlite'
+        self._usage_context = contextvars.ContextVar('provider_usage_context', default=(None, None))
         self.data = {'mode': 'evidence', 'provider': {'type': 'openai', 'baseUrl': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'apiKey': '', 'apiKeyEnv': 'DEEPSEEK_API_KEY'}}
         if self.source and (self.source / 'config.json').is_file():
             cfg = json.loads((self.source / 'config.json').read_text(encoding='utf-8-sig'))
@@ -77,6 +82,9 @@ class Settings:
                 raise ValueError('模型角色配置必须为对象')
             providers[role] = dict(cls.EMPTY_PROVIDER, **fields)
         data['providers'] = providers
+        data.setdefault('reviewPolicy', 'independent')
+        if data['reviewPolicy'] not in ('independent', 'shared'):
+            raise ValueError('reviewPolicy 必须为 independent 或 shared')
         # Retain a shared main-slot alias for existing callers and on-disk readers.
         data['provider'] = providers['main']
         data['search'] = normalize_search(data.get('search'))
@@ -115,11 +123,18 @@ class Settings:
         p = provider if provider is not None else self.data['provider']
         return p.get('apiKey', '') or os.getenv(p.get('apiKeyEnv', ''), '')
 
+    def _effective_provider(self, role):
+        provider = self.data['providers'][role]
+        if (role != 'main' and self.data['reviewPolicy'] == 'shared'
+                and not provider.get('baseUrl') and not provider.get('model')):
+            return self.data['providers']['main']
+        return provider
+
     def role_status(self, role: str = 'main') -> dict:
         """Describe configured routing; readiness is not a live connectivity check."""
         self._validate_role(role)
         with self.lock:
-            p = self.data['providers'][role]
+            p = self._effective_provider(role)
             main = self.data['providers']['main']
             local = urllib.parse.urlparse(p.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
             configured = bool(p.get('model') and p.get('baseUrl'))
@@ -127,6 +142,8 @@ class Settings:
                 'hasKey': bool(self._key(p)), 'configured': configured,
                 'ready': bool(configured and (local or self._key(p))),
                 'identity': self._identity(p), 'local': local,
+                'reviewPolicy': self.data['reviewPolicy'],
+                'sharedWithMain': role != 'main' and p is main,
                 'independentFromMain': bool(role != 'main' and configured and main.get('model')
                                              and main.get('baseUrl') and self._different_identity(p, main)),
             }
@@ -137,7 +154,7 @@ class Settings:
             review_ready = all(providers[role]['ready'] for role in self.ROLES)
             distinct = all(providers[role]['independentFromMain'] for role in ('judge', 'redteam'))
             distinct = distinct and self._different_identity(self.data['providers']['judge'], self.data['providers']['redteam'])
-            return {'mode': self.data['mode'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
+            return {'mode': self.data['mode'], 'reviewPolicy': self.data['reviewPolicy'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
                     'search': copy.deepcopy(self.data['search']),
                     'searchProfiles': copy.deepcopy(PROFILES),
                     'searchKeys': {source: {'hasKey': bool(key)} for source, key in self.search_credentials().items()},
@@ -147,6 +164,7 @@ class Settings:
                     'capabilities': {'modelReady': providers['main']['ready'], 'evidenceReady': True,
                                      'roleReady': {role: providers[role]['ready'] for role in self.ROLES},
                                      'independentReviewReady': bool(review_ready and distinct),
+                                     'reviewReady': bool(review_ready and (distinct or self.data['reviewPolicy'] == 'shared')),
                                      'independenceBasis': 'configured_endpoint_and_model',
                                      'independenceNotice': '仅比较已配置的端点和模型名称，不保证不同厂商、模型族或统计独立性。',
                                      'reproductionScope': 'preflight_and_small_experiments',
@@ -184,6 +202,10 @@ class Settings:
             if not isinstance(payload, dict):
                 raise ValueError('运行设置必须为对象')
             data = copy.deepcopy(self.data)
+            if 'reviewPolicy' in payload:
+                if payload['reviewPolicy'] not in ('independent', 'shared'):
+                    raise ValueError('reviewPolicy 必须为 independent 或 shared')
+                data['reviewPolicy'] = payload['reviewPolicy']
             if 'search' in payload:
                 data['search'] = update_search(data.get('search'), payload['search'])
             if 'searchKeys' in payload:
@@ -240,6 +262,74 @@ class Settings:
             self.data = data
             return self.public()
 
+    def configure_deepseek(self, payload: dict) -> dict:
+        """Explicit opt-in to one-key role separation, preserving the main secret."""
+        if not isinstance(payload, dict) or set(payload) - {'apiKey', 'model'}:
+            raise ValueError('DeepSeek 设置只接受 apiKey 和 model；使用官方地址')
+        with self.lock:
+            provider = {'type': 'openai', 'baseUrl': 'https://api.deepseek.com'}
+            for field in ('apiKey', 'model'):
+                if field in payload:
+                    if not isinstance(payload[field], str):
+                        raise ValueError('DeepSeek 设置字段必须为文本')
+                    if payload[field].strip():
+                        provider[field] = payload[field].strip()
+            provider.setdefault('model', self.data['providers']['main'].get('model') or 'deepseek-chat')
+            return self.update({'mode': 'llm', 'reviewPolicy': 'shared', 'provider': provider})
+
+    @contextmanager
+    def usage_context(self, task_id, node_id=None):
+        for value in (task_id, node_id):
+            if value is not None and (not isinstance(value, str) or not value or len(value) > 256):
+                raise ValueError('用量上下文 ID 无效')
+        token = self._usage_context.set((task_id, node_id))
+        try:
+            yield
+        finally:
+            self._usage_context.reset(token)
+
+    def _usage_database(self):
+        self.usage_path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.usage_path, timeout=30)
+        db.execute('CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY, task_id TEXT, node_id TEXT, role TEXT, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, usage_reported INTEGER, error INTEGER)')
+        return db
+
+    def _record_usage(self, role, usage, error):
+        usage = usage if isinstance(usage, dict) else {}
+        def count(*names):
+            for name in names:
+                value = usage.get(name)
+                if type(value) is int and value >= 0:
+                    return value
+            return None
+        incoming, outgoing = count('prompt_tokens', 'input_tokens'), count('completion_tokens', 'output_tokens')
+        total = count('total_tokens')
+        if total is None and incoming is not None and outgoing is not None:
+            total = incoming + outgoing
+        task_id, node_id = self._usage_context.get()
+        with self.lock:
+            db = self._usage_database()
+            try:
+                with db:
+                    db.execute('INSERT INTO requests (task_id,node_id,role,input_tokens,output_tokens,total_tokens,usage_reported,error) VALUES (?,?,?,?,?,?,?,?)',
+                               (task_id, node_id, role, incoming, outgoing, total, int(total is not None), int(error)))
+            finally:
+                db.close()
+
+    def usage(self, task_id=None) -> dict:
+        with self.lock:
+            db = self._usage_database()
+            try:
+                where, args = (' WHERE task_id = ?', (task_id,)) if task_id is not None else ('', ())
+                row = db.execute('SELECT COUNT(*),COALESCE(SUM(error),0),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(SUM(usage_reported),0) FROM requests' + where, args).fetchone()
+                roles = {role: {'calls': calls, 'errors': errors, 'totalTokens': tokens} for role, calls, errors, tokens in
+                         db.execute('SELECT role,COUNT(*),SUM(error),COALESCE(SUM(total_tokens),0) FROM requests' + where + ' GROUP BY role', args)}
+            finally:
+                db.close()
+        return {'taskId': task_id, 'calls': row[0], 'errors': row[1], 'inputTokens': row[2], 'outputTokens': row[3],
+                'totalTokens': row[4], 'usageReportedCalls': row[5], 'usageMissingCalls': row[0] - row[5],
+                'roles': roles, 'billedCurrency': None, 'billedAmount': None, 'costEstimateAvailable': False}
+
     def safe_error(self, error: Exception) -> str:
         text = str(error)
         with self.lock:
@@ -294,9 +384,20 @@ class Settings:
                     on_retry('模型连接暂时失败，正在重试 1/1；已完成节点保持不变。')
 
     def _chat_once(self, messages: list[dict], max_tokens: int, *, json_mode=False, role='main') -> str:
+        telemetry = {}
+        try:
+            value = self._request_once(messages, max_tokens, json_mode=json_mode, role=role, telemetry=telemetry)
+        except Exception:
+            if telemetry.get('attempted'):
+                self._record_usage(role, telemetry.get('usage'), True)
+            raise
+        self._record_usage(role, telemetry.get('usage'), False)
+        return value
+
+    def _request_once(self, messages, max_tokens, *, json_mode=False, role='main', telemetry):
         self._validate_role(role)
         with self.lock:
-            p = copy.deepcopy(self.data['providers'][role])
+            p = copy.deepcopy(self._effective_provider(role))
             key = self._key(p)
         if not p.get('model') or not p.get('baseUrl'):
             raise ValueError(f'未配置{self.ROLE_NAMES[role]}模型（{role}）；请在运行设置中单独配置，不能自动使用主研究模型代替')
@@ -317,12 +418,14 @@ class Settings:
             headers['Authorization'] = 'Bearer ' + (key or 'local')
             endpoint = p['baseUrl'] + '/chat/completions'
         request = urllib.request.Request(endpoint, data=json.dumps(body).encode('utf-8'), headers=headers, method='POST')
+        telemetry['attempted'] = True
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
                 raw = response.read(4 * 1024 * 1024 + 1)
                 if len(raw) > 4 * 1024 * 1024:
                     raise ValueError('模型响应超出 4 MB 限制')
                 result = json.loads(raw.decode('utf-8'))
+                telemetry['usage'] = result.get('usage')
         except urllib.error.HTTPError as exc:
             if exc.code in (408, 429, 500, 502, 503, 504):
                 raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），可稍后继续') from None
@@ -338,4 +441,6 @@ class Settings:
             text = (choices[0].get('message', {}).get('content') if choices else '') or ''
         if not isinstance(text, str) or not text.strip():
             raise ModelOutputError('模型返回空内容')
+        if json_mode:
+            parse_json_object(text)
         return text

@@ -329,6 +329,7 @@ def _artifacts_intact(engine, hashes):
 
 
 def _existing_sources(engine, ids, demand):
+    from .semantic_review import review_admitted
     by_id = {e['id']: e for e in engine._state['evidence']}
     for eid in ids:
         evidence = by_id[eid]
@@ -337,9 +338,7 @@ def _existing_sources(engine, ids, demand):
             approval = engine._state['project'].get('researchEvidenceApprovals', {}).get(eid)
             receipt = (engine._artifact_root / evidence['locator']).resolve()
             if (evidence.get('executionStatus') != 'completed' or not approval or
-                    not approval.get('review', {}).get('independent') or
-                    approval.get('review', {}).get('status') != 'completed' or
-                    approval.get('review', {}).get('role') != 'redteam' or
+                    not review_admitted(approval.get('review', {}), 'redteam') or
                     not receipt.is_relative_to(engine._artifact_root / 'runs') or not receipt.is_file() or
                     hashlib.sha256(receipt.read_bytes()).hexdigest() != evidence.get('sha256')):
                 return False
@@ -406,11 +405,11 @@ def accept(engine, node, output, token):
         review = structured.get('experimentReview', {})
         valid_execution = bool(latest and (latest.get('output') or {}).get('structured', {}).get('experimentRun', {}).get('verified'))
         reviewer = structured.get('review', {})
-        independently_reviewed = (reviewer.get('role') == 'redteam' and reviewer.get('independent') is True
-                                  and reviewer.get('status') == 'completed')
-        if phase == 'aggregate' and review.get('valid') and not independently_reviewed:
+        from .semantic_review import review_admitted
+        reviewed = review_admitted(reviewer, 'redteam')
+        if phase == 'aggregate' and review.get('valid') and not reviewed:
             review.update(valid=False, blocked=True, reason='缺少独立红队复核；执行成功不等同实验有效。')
-        if phase == 'aggregate' and review.get('valid') and valid_execution and independently_reviewed:
+        if phase == 'aggregate' and review.get('valid') and valid_execution and reviewed:
             ids = latest['output']['evidenceIds']
             if not ids or not review['evidenceIds'] or not set(review['evidenceIds']).issubset(set(ids)):
                 raise ValueError('实验复核必须引用当前实验返回的实际凭据')

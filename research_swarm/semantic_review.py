@@ -17,6 +17,23 @@ from .providers import parse_json_object
 RULES = ('direct_statement', 'verified_measurement')
 
 
+def review_admitted(review, role):
+    """Admit explicit role reviews; shared lineage never becomes independence."""
+    return (review.get('role') == role and review.get('status') == 'completed' and
+            (review.get('independent') is True or
+             (review.get('independent') is False and review.get('policy') == 'shared'
+              and review.get('reviewLevel') == 'same_model' and review.get('blinded') is True)))
+
+
+def review_metadata(status, role):
+    independent = status.get('independentFromMain') is True
+    return {'status': 'completed', 'role': role, 'independent': independent,
+            'policy': status.get('reviewPolicy', 'independent'),
+            'reviewLevel': 'independent' if independent else 'same_model',
+            'identity': status.get('identity'), 'blinded': True,
+            'needsHumanReview': not independent}
+
+
 def relation_gaps(relation, evidence, claim, approvals=None, current_round=None):
     """Return deterministic reasons a directional relation cannot be admitted."""
     if relation.get('type') != 'support' or relation.get('polarity', 'unresolved') == 'unresolved':
@@ -42,8 +59,7 @@ def relation_gaps(relation, evidence, claim, approvals=None, current_round=None)
         review = approval.get('review', {})
         if (evidence.get('type') != 'experiment' or evidence.get('tool') != 'python_run'
                 or evidence.get('executionStatus') != 'completed' or not approval.get('artifactHashes')
-                or review.get('role') != 'redteam' or review.get('status') != 'completed'
-                or review.get('independent') is not True):
+                or not review_admitted(review, 'redteam')):
             gaps.append('测量模式缺少经过协议复核的当前执行凭据')
         if target:
             # Only machine-readable, predeclared bounds can establish tolerance.
@@ -91,7 +107,7 @@ def blind_payload(node, context):
                 'abstractIsNotFullText': True, 'paperReportIsNotReproduction': True,
                 'missingOrConflictingEvidence': 'inconclusive'},
             'verifiedMeasurements': {eid: {key: copy.deepcopy(value.get(key)) for key in
-                ('protocolId', 'measurements', 'conditions', 'artifactHashes', 'round')} for eid, value in
+                ('protocolId', 'measurements', 'conditions', 'artifactHashes', 'round', 'review')} for eid, value in
                                      context.get('evidenceApprovals', {}).items() if eid in returned}}
 
 
@@ -110,7 +126,7 @@ def unavailable_result(message, role='judge', identity=None):
 def review_claim(settings, node, context, log):
     """Judge receives source material, never producer summaries or verdicts."""
     status = settings.role_status('judge')
-    if not status.get('ready') or not status.get('independentFromMain'):
+    if not status.get('ready') or not (status.get('independentFromMain') or status.get('reviewPolicy') == 'shared'):
         return unavailable_result('独立裁判尚未配置或与生产模型相同；主张保持证据不足。', identity=status.get('identity'))
     payload = blind_payload(node, context)
     if not payload['evidence']:
@@ -150,9 +166,11 @@ direct_statement 只用于正文直接陈述；verified_measurement 须有宿主
                            limitations=verdict['limitations'] + '；来源或支持模式未通过宿主检查。')
         confidence = min((r.get('confidence', 0) for r in relations), default=0)
         sample = int(hashlib.sha256((str(payload['claim'].get('id')) + ':' + str(payload['claim'].get('version'))).encode()).hexdigest()[:8], 16) % 10 == 0
-        review = {'status': 'completed', 'independent': True, 'role': 'judge', 'identity': status.get('identity'),
-                  'blinded': True, 'confidence': confidence, 'needsHumanReview': confidence < .8 or sample,
+        review = {**review_metadata(status, 'judge'), 'confidence': confidence,
+                  'needsHumanReview': not status.get('independentFromMain') or confidence < .8 or sample,
                   'samplingReason': 'low_confidence' if confidence < .8 else 'random_sample' if sample else None}
+        if not review['independent']:
+            verdict['limitations'] += '；同一模型分角色复核，仅为候选判断，尚无独立科学验证。'
         return {'summary': verdict['reason'], 'evidenceIds': list(dict.fromkeys(verdict['evidenceIds'] + list(admitted))),
                 'claims': [], 'structured': {'hypothesisVerdict': verdict, 'evidenceRelations': relations, 'review': review},
                 'unresolved': list(dict.fromkeys(gaps))}

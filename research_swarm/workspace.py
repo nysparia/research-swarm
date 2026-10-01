@@ -6,6 +6,7 @@ import io
 import json
 import re
 import threading
+from contextlib import nullcontext
 import uuid
 import zipfile
 from pathlib import Path
@@ -36,6 +37,8 @@ class WorkspaceApplication:
         self._configuring = False
         self._data_root = self.state_dir / 'tasks'
         self._data_root.mkdir(exist_ok=True)
+        from .workspace_backend import WorkspaceBackend
+        self.backend = WorkspaceBackend(self)
         for path in self._data_root.glob('*/conversation.json'):
             if not re.fullmatch(r'[a-f0-9]{32}', path.parent.name):
                 continue
@@ -51,6 +54,9 @@ class WorkspaceApplication:
                     record['error'] = '上次服务停止，已保留需求和执行记录。可以继续研究。'
                     record['token'] += 1
                 self._records[record['id']] = record
+                for interaction in record.get('interactions', []):
+                    if interaction.get('status') == 'running':
+                        interaction.update(status='failed', error='解释请求因服务重启中断；已有研究和产物保留，可重新询问。', finishedAt=utc_now())
             except (ValueError, KeyError, TypeError):
                 continue
         marker = self.state_dir / 'source-imported.json'
@@ -84,6 +90,9 @@ class WorkspaceApplication:
                 for record in self._records.values():
                     try:
                         self._synchronize(record)
+                        app = self._apps.get(record['id'])
+                        if app or record['id'] in self.backend._jobs:
+                            self.detail(record['id'])
                     except (OSError, ValueError) as exc:
                         record['error'] = '研究记录保存未完成：' + self.settings.safe_error(exc)
 
@@ -189,10 +198,12 @@ class WorkspaceApplication:
                             seen.add(relative)
                             artifacts.append({'name': item.get('name') or path.name, 'kind': 'experiment',
                                               'url': f'/api/tasks/{task_id}/artifacts/{relative}'})
+            workbench = self.backend.sync(record, state, artifacts)
             return copy.deepcopy({'task': self._summary(record), 'phase': record['phase'], 'document': record['document'],
                                   'taskMode': record.get('taskMode', 'research'),
                                   'messages': record['messages'], 'state': state, 'error': record['error'], 'artifacts': artifacts,
-                                  'runs': record['runs'], 'modelReady': self.settings.public()['capabilities']['modelReady']})
+                                  'runs': record['runs'], 'workbench': workbench,
+                                  'modelReady': self.settings.public()['capabilities']['modelReady']})
 
     def _spawn(self, function, *args):
         thread = threading.Thread(target=function, args=args, daemon=True, name='research-conversation')
@@ -219,6 +230,7 @@ class WorkspaceApplication:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
 只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
+        prompt += '\n另返回 plan:{"capabilities":[能力ID],"rationale":"为何需要这些能力"}。能力仅选 review(综述)、investigation(机制研究)、reproduction(复现)、experimentation(实验)、paper_preparation(论文写作)，可以组合。只有用户明确希望撰写论文才选择 paper_preparation。'
         result = parse_json_object(self.settings.chat([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}], max_tokens=6500, json_mode=True))
         if not isinstance(result.get('markdown'), str) or not result['markdown'].strip() or len(result['markdown']) > 60000:
             raise ValueError('模型没有返回有效需求文档，用户编辑已保存，可重试润色')
@@ -236,7 +248,7 @@ class WorkspaceApplication:
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
                 'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': 'model', 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:4]]}
+                'queries': [q.strip()[:1000] for q in queries[:4]], 'plan': result.get('plan')}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
@@ -244,14 +256,28 @@ class WorkspaceApplication:
             previous_report = (state or {}).get('report')
             with self._lock:
                 task_mode = self._record(task_id).get('taskMode', 'research')
-            result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
+            meter = self.settings.usage_context(task_id) if hasattr(self.settings, 'usage_context') else nullcontext()
+            with meter:
+                result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
             with self._lock:
                 record = self._record(task_id)
                 if self._closed or record['token'] != token or record['document']['revision'] != revision:
                     return
+                from .draft_blocks import reconcile_blocks, render_blocks
+                record['draftBlocks'] = reconcile_blocks(result['markdown'], record.get('draftBlocks'), actor='AI')
+                result['markdown'] = render_blocks(record['draftBlocks'])
+                result['requirements'] = self.backend.requirements(record['draftBlocks'])
                 record['documentHistory'].append({'at': utc_now(), 'actor': 'AI' if result['source'] == 'model' else 'system', 'revision': revision + 1, 'markdown': result['markdown'], 'reason': result['summary']})
                 record['document'].update(markdown=result['markdown'], revision=revision + 1, polishing=False, polishedFrom=revision, source=result['source'], questions=result['questions'], error=None)
                 record['compiled'] = result
+                from .research_plan import infer_plan, normalize_plan
+                try:
+                    candidate = result.get('plan') or {}
+                    if result['source'] != 'model':
+                        raise ValueError('Use local intent fallback')
+                    record['plan'] = normalize_plan(candidate.get('capabilities'), candidate.get('rationale', ''))
+                except (ValueError, AttributeError):
+                    record['plan'] = infer_plan(text, task_mode)
                 record['title'] = result['title']
                 record['phase'] = 'requirements'
                 self._message(record, 'assistant', result['summary'], 'requirements')
@@ -277,6 +303,21 @@ class WorkspaceApplication:
             app = ResearchApplication(source, root / 'runtime', self.max_workers, workflow='autonomous')
             app.settings = self.settings
             app.runner.settings = self.settings
+            def task_runner(node, context, log):
+                meter = self.settings.usage_context(task_id, node['id']) if hasattr(self.settings, 'usage_context') else nullcontext()
+                with self._lock:
+                    context['executionSettings'] = copy.deepcopy(self._record(task_id).get('executionSettings', {}))
+                    context['researchPlan'] = copy.deepcopy(self._record(task_id).get('plan', {}))
+                materials = self.backend.materials(task_id)
+                context['inputMaterials'] = [dict(materials.get(mid), path=str(materials.path(mid)))
+                    for mid in context['executionSettings'].get('materialIds', [])]
+                context['inputMaterialsRoot'] = str(materials.root)
+                context['experimentJobs'] = self.backend.jobs(task_id)
+                if hasattr(app.runner, 'local_tools'):
+                    app.runner.local_tools = context['experimentJobs'].tools
+                with meter:
+                    return app.runner(node, context, log)
+            app.engine._runner = task_runner
             app.mutation_lock = self._mutation_lock
             with self._lock:
                 if self._closed:
@@ -356,6 +397,7 @@ class WorkspaceApplication:
                     self._message(record, 'assistant', '已记录你的研究选择，继续据此取得数据并验证。', 'progress')
                     self._save(record)
                     return self.detail(task_id)
+                return self.backend.ask_overview(task_id, text)
             if app:
                 app.post('/api/actions/pause', {})
                 project = app.engine.snapshot()['project']
@@ -369,6 +411,9 @@ class WorkspaceApplication:
             if not editing:
                 self._message(record, 'user', text)
             raw = text if editing else previous + ('\n\n## 用户补充\n\n' if previous else '') + text
+            if editing:
+                from .draft_blocks import reconcile_blocks
+                record['draftBlocks'] = reconcile_blocks(raw, record.get('draftBlocks'), actor='user')
             record['documentHistory'].append({'at': utc_now(), 'actor': 'user', 'revision': revision, 'markdown': raw})
             record['document'].update(markdown=raw, revision=revision, polishing=True, polishedFrom=None, error=None)
             self._save(record)
@@ -394,7 +439,7 @@ class WorkspaceApplication:
         if path == '/api/tasks':
             with self._lock:
                 return self.detail(self._create()['id'])
-        if path in ('/api/setup', '/api/settings'):
+        if path in ('/api/setup', '/api/settings', '/api/settings/deepseek'):
             with self._lock:
                 if self._settings_busy():
                     raise ValueError('请先暂停研究并等待需求整理结束，再修改模型连接')
@@ -402,14 +447,16 @@ class WorkspaceApplication:
                     key = payload.get('apiKey', '')
                     if not isinstance(key, str) or not key.strip():
                         raise ValueError('请输入 DeepSeek API Key')
-                    payload = {'mode': 'llm', 'provider': {'type': 'openai', 'baseUrl': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'apiKey': key}}
                 before = copy.deepcopy(self.settings.data)
                 self._configuring = True
             try:
-                self.settings.update(payload)
+                if path in ('/api/setup', '/api/settings/deepseek'):
+                    self.settings.configure_deepseek(payload)
+                else:
+                    self.settings.update(payload)
                 if path == '/api/setup':
                     self.settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32)
-                message = '主研究模型已连接；证据裁判与对抗复核须单独配置' if path == '/api/setup' else '运行设置已保存'
+                message = '单 Key 科研角色已配置；同模型复核会标记来源，不冒充独立验证' if path != '/api/settings' else '运行设置已保存'
                 return dict(self.settings.public(), ok=True, message=message)
             except Exception as exc:
                 message = self.settings.safe_error(exc)
@@ -428,6 +475,9 @@ class WorkspaceApplication:
         task_id, action = match.groups()
         with self._lock:
             self._record(task_id)
+        result = self.backend.post(task_id, action, payload)
+        if result is not NotImplemented:
+            return result
         if action in ('messages', 'document'):
             return self._edit(task_id, payload, action == 'document')
         if action == 'task-mode':
@@ -455,6 +505,9 @@ class WorkspaceApplication:
                     raise ValueError('本任务已经在研究中')
                 record['token'] += 1
                 record['phase'], record['error'] = 'retrieving', None
+                if not record.get('plan'):
+                    from .research_plan import infer_plan
+                    record['plan'] = infer_plan(record['document']['markdown'], record.get('taskMode', 'research'))
                 self._message(record, 'user', '按当前需求开始研究。')
                 self._save(record)
                 self._spawn(self._run, task_id, record['token'])
@@ -470,6 +523,8 @@ class WorkspaceApplication:
                     raise ValueError('请先开始当前需求对应的研究')
             app = self._ensure_app(task_id)
             result = app.post('/api/' + action, payload)
+            if operation == 'pause':
+                self.backend.cancel_jobs(task_id)
             if operation == 'impact':
                 return result
             with self._mutation_lock:
@@ -503,6 +558,12 @@ class WorkspaceApplication:
         detail = self.detail(task_id)
         if not action:
             return 200, detail, 'application/json', None
+        if action.startswith('jobs/') and action.endswith('/files') and action.count('/') == 2:
+            return self.backend.download_job(task_id, action.split('/')[1], query)
+        with self._lock:
+            result = self.backend.read(task_id, action, query)
+            if result is not NotImplemented:
+                return 200, result, 'application/json', None
         if action == 'document':
             return 200, detail['document']['markdown'].encode('utf-8'), 'text/markdown; charset=utf-8', {'Content-Disposition': 'attachment; filename="requirements.md"'}
         if action.startswith('artifacts/'):
@@ -535,6 +596,9 @@ class WorkspaceApplication:
                 archive.writestr('requirements.md', detail['document']['markdown'].encode('utf-8'))
                 archive.writestr('conversation.json', json.dumps(detail['messages'], ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('requirement-history.json', json.dumps(self._record(task_id)['documentHistory'], ensure_ascii=False, indent=2).encode('utf-8'))
+                archive.writestr('workbench.json', json.dumps(detail['workbench'], ensure_ascii=False, indent=2).encode('utf-8'))
+                archive.writestr('interactions.json', json.dumps(self._record(task_id).get('interactions', []), ensure_ascii=False, indent=2).encode('utf-8'))
+                archive.writestr('proposals.json', json.dumps(self._record(task_id).get('proposals', []), ensure_ascii=False, indent=2).encode('utf-8'))
             return 200, stream.getvalue(), 'application/zip', {'Content-Disposition': 'attachment; filename="research-results.zip"'}
         if action.startswith('nodes/') and action.endswith('/history'):
             app = self._ensure_app(task_id)
@@ -555,8 +619,10 @@ class WorkspaceApplication:
                 self._synchronize(record)
             self._closed = True
             self._stop_event.set()
-            for app in self._apps.values():
-                app.engine.close()
+            apps_to_close = list(self._apps.values())
+        for app in apps_to_close:
+            app.engine.close()
         for thread in self._threads:
             thread.join(timeout=.05)
         self._supervisor.join(timeout=.2)
+        self.backend.close()

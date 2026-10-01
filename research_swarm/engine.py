@@ -1,6 +1,7 @@
 """Persistent gated or autonomous research workflows with bounded execution."""
 
 import copy
+import hashlib
 import json
 import threading
 import time
@@ -204,6 +205,22 @@ class Engine:
         with self._condition:
             if self._closed:
                 raise ValueError("研究引擎已关闭")
+            operation_id = payload.get('operationId')
+            operation_hash = None
+            if operation_id is not None:
+                if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 100:
+                    raise ValueError('操作标识无效')
+                operation_hash = hashlib.sha256(json.dumps({'action': action,
+                    'payload': {k: v for k, v in payload.items() if k != 'expectedRevision'}},
+                    sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+                applied = self._state.get('appliedOperations', {}).get(operation_id)
+                if applied:
+                    if applied['hash'] != operation_hash:
+                        raise ValueError('操作标识已用于不同请求')
+                    return self.snapshot()
+            if action == 'draft-impact':
+                from .requirement_changes import impact
+                return impact(self, payload.get('requirements'))
             if action == "impact":
                 node = self._action_node(payload)
                 kind = self._kind(payload.get("kind"))
@@ -220,6 +237,7 @@ class Engine:
                 "research-choice": self._research_choice,
                 "paper-context": self._paper_context,
                 "claim-decision": self._claim_decision,
+                "revise-requirements": self._revise_requirements,
             }
             if action not in methods:
                 raise ValueError("不支持的操作: " + str(action))
@@ -230,6 +248,9 @@ class Engine:
             old_executions = dict(self._executions)
             try:
                 methods[action](copy.deepcopy(payload))
+                if operation_id:
+                    self._state.setdefault('appliedOperations', {})[operation_id] = {
+                        'hash': operation_hash, 'action': action, 'at': _now()}
                 self._commit()
             except Exception:
                 self._state = before
@@ -253,6 +274,10 @@ class Engine:
                 raise ValueError('主张与操作节点不匹配')
             return self._get_node(claim['ownerNodeId'])
         return self._get_node(payload.get('nodeId'))
+
+    def _revise_requirements(self, payload):
+        from .requirement_changes import apply
+        apply(self, payload)
 
     def _claim_decision(self, payload):
         if payload.get('expectedRevision') != self._state['revision']:
@@ -1255,7 +1280,10 @@ class Engine:
         root = artifact_root.resolve()
         recorded = {(entry.get('execution') or {}).get('receipt') for entry in self._state['history']
                     if entry.get('type') == 'tool-executed'}
-        for receipt in (root/'runs').glob('local-*/receipt.json'):
+        receipts = list((root/'runs').glob('local-*/receipt.json'))
+        receipts.extend((root/'runs').glob('job-*/attempt-*/receipt.json'))
+        receipts.extend((root/'runs').glob('job-*/attempt-*/recovery-receipt.json'))
+        for receipt in receipts:
             relative = receipt.relative_to(root).as_posix()
             if relative in recorded or receipt.is_symlink() or not receipt.resolve().is_relative_to(root/'runs'):
                 continue

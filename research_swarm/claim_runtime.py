@@ -100,8 +100,8 @@ def output_relations(state, node, output, phase):
     explicit = output.get('structured', {}).get('evidenceRelations', [])
     validate_relations(explicit, set(evidence))
     review = output.get('structured', {}).get('review', {})
-    independent = review.get('independent') is True and review.get('status') == 'completed' and review.get('role') == 'judge'
-    from .semantic_review import relation_gaps
+    from .semantic_review import relation_gaps, review_admitted
+    reviewed = review_admitted(review, 'judge')
     accepted = set(output.get('evidenceIds', []))
     for relation in explicit:
         if relation.get('claimId', claim_id) != claim_id or relation.get('claimVersion', claim['version']) != claim['version']:
@@ -109,7 +109,7 @@ def output_relations(state, node, output, phase):
         proposed = relation.get('polarity', 'unresolved')
         gaps = relation_gaps(relation, evidence[relation['evidenceId']], claim,
                              state['project'].get('researchEvidenceApprovals'), state['project'].get('round'))
-        if relation['type'] == 'support' and proposed != 'unresolved' and not independent:
+        if relation['type'] == 'support' and proposed != 'unresolved' and not reviewed:
             gaps.append('生产节点的方向未经过独立裁判复核')
         link = add_relation(state, claim_id, relation['evidenceId'], relation_type=relation['type'],
             polarity='unresolved' if gaps else proposed, reason=relation['reason'],
@@ -138,7 +138,7 @@ def output_relations(state, node, output, phase):
     current = [r for r in state['claimGraph']['relations'] if r['claimId'] == claim_id and
                r['claimVersion'] == claim['version'] and r['type'] == 'support' and
                r['quality'] != 'unusable' and r.get('semanticGate', {}).get('passed') and
-               r.get('review', {}).get('independent') and evidence.get(r['evidenceId'], {}).get('locator')]
+               review_admitted(r.get('review', {}), 'judge') and evidence.get(r['evidenceId'], {}).get('locator')]
     directions = {r['polarity'] for r in current}
     status = 'mixed' if 'mixed' in directions or {'for', 'against'}.issubset(directions) else verdict['status']
     if status == 'mixed':
@@ -153,11 +153,15 @@ def output_relations(state, node, output, phase):
     if status == 'supported' and omitted_counterevidence:
         status = 'inconclusive'
         ids = list(dict.fromkeys(ids + omitted_counterevidence))
-    if not independent or (status in ('supported', 'refuted') and not set(ids).issubset(covered)):
+    if not reviewed or (status in ('supported', 'refuted') and not set(ids).issubset(covered)):
         status = 'inconclusive'
     assess_claim(state, claim_id, status, verdict['reason'], evidence_ids=ids,
                  limitations=verdict.get('limitations', ''))
     claim['assessment']['review'] = copy.deepcopy(review) or {'status': 'unreviewed', 'independent': False, 'role': 'main', 'needsHumanReview': True}
+    if review.get('reviewLevel') == 'same_model':
+        notice = '同一模型分角色复核，仅为候选判断，尚无独立科学验证。'
+        if notice not in claim['assessment']['limitations']:
+            claim['assessment']['limitations'] += '；' + notice
     if status in ('mixed', 'inconclusive') and verdict['status'] != 'inconclusive':
         verdict['status'] = 'inconclusive'
         verdict['evidenceIds'] = ids
@@ -257,7 +261,8 @@ def report_from_claims(state):
             'text': claim['statement'], 'nodeId': claim.get('ownerNodeId'), 'evidenceIds': ids,
             'status': 'confirmed' if assessment.get('confirmedByUser') else 'candidate',
             'assessmentStatus': assessment['status'], 'limitations':
-                ('无证据：该主张尚待验证。' if not ids else '') + assessment.get('limitations', '')})
+                ('无证据：该主张尚待验证。' if not ids else '') + assessment.get('limitations', ''),
+            'review': copy.deepcopy(assessment.get('review', {}))})
         lines.extend(['### ' + claim['statement'], '', f"主张 `{claim['id']}` · 版本 {claim['version']}", '',
             '判断：' + status_names[assessment['status']], '', '范围：' + (claim['scope'] or '尚未明确'), '',
             '可证伪条件：' + (claim['falsification'] or '尚未明确'), '', assessment.get('reason', ''), ''])

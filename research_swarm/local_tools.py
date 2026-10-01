@@ -6,6 +6,7 @@ receipts. This is process isolation, not an OS security sandbox.
 from __future__ import annotations
 
 import hashlib
+import copy
 import csv
 import io
 import json
@@ -149,13 +150,32 @@ class LocalResearchTools:
                 context['record_execution'](result)
             if name == 'artifact_read' and context.get('record_artifact_read'):
                 context['record_artifact_read'](result)
-            return result
+            model_result = copy.deepcopy(result)
+            for item in model_result.get('inputs', []):
+                if isinstance(item.get('source'), dict):
+                    item['source'] = {key: value for key, value in item['source'].items()
+                                      if key in ('type', 'originalName', 'url', 'commit', 'format')}
+            return model_result
         finally:
             activity(False)
+
+    def _environment_snapshot(self, python, cwd, run, log, cancelled):
+        code = ENVIRONMENT_CODE.replace('print(json.dumps(data,ensure_ascii=False))',
+            'data["packages"]={d.metadata["Name"]:d.version for d in importlib.metadata.distributions() if d.metadata.get("Name")}\nprint(json.dumps(data,ensure_ascii=False))')
+        probe = self._process([str(python), '-I', '-X', 'utf8', '-c', code], cwd, run / 'environment', 20, log, cancelled)
+        if probe['status'] != 'completed' and probe['status'] != 'cancelled':
+            raise RuntimeError('实际执行环境快照失败：' + probe['status'])
+        environment = json.loads(probe['stdout']) if probe['status'] == 'completed' else {'status': 'cancelled', 'error': 'Environment snapshot cancelled before execution'}
+        environment['dependencyIsolation'] = 'explicit interpreter' if self.python else 'task-local venv'
+        target = run / 'environment.json'
+        target.write_text(json.dumps(environment, ensure_ascii=False, indent=2), encoding='utf-8')
+        return environment, target
 
     def _call(self, name, arguments, node, context, log):
         if name not in self.names or not isinstance(arguments,dict):
             raise ValueError('本机科研工具或参数无效')
+        if name == 'python_run' and context.get('experimentJobs') is not None:
+            return self._managed_run(arguments, node, context, log)
         if name=='artifact_read':
             path=(self.root/str(arguments.get('path',''))).resolve()
             if not path.is_relative_to(self.root/'runs') or not path.is_file() or path.is_symlink():
@@ -191,6 +211,7 @@ class LocalResearchTools:
                               keyCount=len(data) if isinstance(data, dict) else None,
                               text=json.dumps(summarize(data), ensure_ascii=False, indent=2)[:48000] + '\n[仅预览；全文哈希及字节数已核验，数组显示长度与前10项]')
             return result
+
         packages=[]
         if name=='python_install':
             indexes = {'pypi':'https://pypi.org/simple', 'tuna':'https://pypi.tuna.tsinghua.edu.cn/simple'}
@@ -214,8 +235,10 @@ class LocalResearchTools:
             node_name=hashlib.sha256(str(node['id']).encode()).hexdigest()[:12]
             cwd=self.root/'laboratory'/f'round-{int(context.get("round",1))}'/node_name
             cwd.mkdir(parents=True,exist_ok=True)
+            inputs = self._copy_input_materials(context.get('inputMaterials', []), cwd, context.get('inputMaterialsRoot')) if name == 'python_run' else []
             started=datetime.now(timezone.utc).isoformat()
             python=self._ensure_python(log,cancelled)
+            environment, environment_path = self._environment_snapshot(python, cwd, run, log, cancelled) if name == 'python_run' else (None, None)
             script=run/'experiment.py'
             if name=='python_install':
                 uv = shutil.which('uv')
@@ -237,7 +260,11 @@ class LocalResearchTools:
                 script.write_text(code,encoding='utf-8',newline='\n')
                 # -I ignores PYTHONUTF8/PYTHONIOENCODING; make UTF-8 explicit for Chinese process logs.
                 argv=[str(python),'-I','-X','utf8','-u',str(script)]
-                timeout=max(1,min(180,int(arguments.get('timeoutSeconds',90))))
+                settings = context.get('executionSettings') or {}
+                maximum = settings.get('maxTimeoutSeconds', 180)
+                if type(maximum) is not int or not 1 <= maximum <= 86400:
+                    raise ValueError('执行设置 maxTimeoutSeconds 须为 1–86400 秒')
+                timeout=max(1,min(maximum,int(arguments.get('timeoutSeconds',90))))
             log('本机执行：'+('安装科研依赖 '+', '.join(packages)+' · 来源 '+source if packages else name)+' · 工作目录 '+cwd.relative_to(self.root).as_posix())
             before = {path: (path.stat().st_size, path.stat().st_mtime_ns)
                       for path in cwd.rglob('*') if path.is_file() and not path.is_symlink()}
@@ -251,12 +278,17 @@ class LocalResearchTools:
                     'stdoutPath': (run / 'stdout.txt').relative_to(self.root).as_posix(),
                     'stderrPath': (run / 'stderr.txt').relative_to(self.root).as_posix(),
                     'dashboardBefore': before.get(cwd / 'research-dashboard.json')})
-            result=self._process(argv,cwd,run,timeout,log,cancelled)
+            if cancelled():
+                (run / 'stdout.txt').write_bytes(b'')
+                (run / 'stderr.txt').write_bytes(b'')
+                result = {'status': 'cancelled', 'returnCode': None, 'elapsedMs': 0, 'stdout': '', 'stderr': ''}
+            else:
+                result=self._process(argv,cwd,run,timeout,log,cancelled)
             artifacts=[]
             for path in sorted(cwd.rglob('*')):
                 if result['status']=='cancelled': break  # Finish cancellation receipt promptly.
                 relative_parts = path.relative_to(cwd).parts
-                if relative_parts[:2] == ('pip', 'cache') or any(part in ('.cache', '__pycache__') or part.startswith('pip-') for part in relative_parts):
+                if relative_parts[:1] == ('inputs',) or relative_parts[:2] == ('pip', 'cache') or any(part in ('.cache', '__pycache__') or part.startswith('pip-') for part in relative_parts):
                     continue
                 if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(cwd) or '__pycache__' in path.parts:
                     continue
@@ -266,11 +298,14 @@ class LocalResearchTools:
                 shutil.copyfile(path,target)
                 artifacts.append({'name':path.name,'path':target.relative_to(self.root).as_posix(),
                                   'sha256':hashlib.sha256(target.read_bytes()).hexdigest(),'bytes':target.stat().st_size})
-            result.update(tool=name,nodeId=node['id'],nodeVersion=node.get('version',1),
+            result.update(tool=name,nodeId=node['id'],nodeVersion=node.get('version',1),timeoutSeconds=timeout,
                           executionToken=context.get('executionToken'),round=context.get('round',1),createdAt=started,
-                          command=argv,workingDirectory=cwd.relative_to(self.root).as_posix(),artifacts=artifacts,
+                          command=argv,workingDirectory=cwd.relative_to(self.root).as_posix(),artifacts=artifacts,inputs=inputs,
                           stdoutPath=(run/'stdout.txt').relative_to(self.root).as_posix(),
                           stderrPath=(run/'stderr.txt').relative_to(self.root).as_posix())
+            if environment is not None:
+                result.update(environment=environment, environmentPath=environment_path.relative_to(self.root).as_posix(),
+                              environmentSha256=hashlib.sha256(environment_path.read_bytes()).hexdigest())
             if script_digest:
                 result['script']=script.relative_to(self.root).as_posix()
                 result['scriptSha256']=script_digest
@@ -285,7 +320,104 @@ class LocalResearchTools:
                       'locator':receipt.relative_to(self.root).as_posix(),'quote':quote[:45000],
                       'sha256':digest,'tool':name,'executionStatus':result['status'],'confidence':1.0}
             result['evidence']=[evidence]
+            result['receipt'] = receipt.relative_to(self.root).as_posix()
             log(f'本机执行结束：{name} · {result["status"]} · 退出码 {result["returnCode"]} · {result["elapsedMs"]} ms · 凭据 {evidence["id"]}')
             if result['stderr']: log(result['stderr'][-1800:])
             if result['stdout']: log(result['stdout'][-2200:])
             return result
+
+    def _copy_input_materials(self, manifests, cwd, material_root=None):
+        from .research_materials import safe_relative, reject_links
+        if not isinstance(manifests, list) or len(manifests) > 30:
+            raise ValueError('节点材料须为最多 30 条宿主已验证材料')
+        boundary = reject_links(Path(material_root) if material_root is not None else self.root).resolve()
+        if boundary not in (self.root, self.root / 'experiment-workspace', self.root.parent / 'experiment-workspace'):
+            raise ValueError('材料根目录须属于同一课题')
+        reject_links(cwd)
+        prior = reject_links(cwd / 'inputs')
+        if prior.exists():
+            for item in prior.rglob('*'):
+                reject_links(item)
+            shutil.rmtree(prior)
+        inputs, names = [], set()
+        for manifest in manifests:
+            if not isinstance(manifest, dict):
+                raise ValueError('材料清单无效')
+            name = manifest.get('name')
+            relative = safe_relative(name)
+            if len(relative.parts) != 1 or name.casefold() in names:
+                raise ValueError('材料文件名须安全且唯一')
+            names.add(name.casefold())
+            spelling = manifest.get('path')
+            if not isinstance(spelling, str) or not Path(spelling).is_absolute() or '..' in Path(spelling).parts:
+                raise ValueError('材料路径须由宿主提供绝对路径')
+            source = reject_links(Path(spelling))
+            if (not source.is_relative_to(boundary / 'materials') or not source.is_file() or source.stat().st_size > 50 * 1024 * 1024
+                    or source.parent.name != manifest.get('id') or source.parent.parent.name != 'materials'):
+                raise ValueError('材料须来自本课题的托管输入目录')
+            metadata_path = reject_links(source.parent / 'metadata.json')
+            metadata = json.loads(metadata_path.read_text('utf-8'))
+            expected = manifest.get('sha256')
+            data = source.read_bytes()
+            if metadata.get('id') != manifest.get('id') or metadata.get('name') != name or metadata.get('sha256') != expected or hashlib.sha256(data).hexdigest() != expected:
+                raise ValueError('材料原始哈希校验失败')
+            target = reject_links(cwd / 'inputs' / relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            inputs.append({'id': manifest['id'], 'name': name, 'sha256': expected, 'bytes': len(data),
+                           'source': metadata.get('source'), 'path': target.relative_to(self.root).as_posix(), 'revision': metadata.get('revision', 1)})
+        return inputs
+
+    def _managed_run(self, arguments, node, context, log):
+        """Optional host-wired queue; preserve the same receipts and evidence gates.
+
+        Both tools must share their artifact root so artifact_read and the engine
+        verify exactly the same files. Standalone workspace jobs can use a
+        separate root, but cannot masquerade as an engine execution receipt.
+        """
+        jobs = context['experimentJobs']
+        if Path(jobs.root).resolve() != self.root:
+            raise ValueError('托管实验与节点工具须共享同一课题产物根目录')
+        settings = context.get('executionSettings') or {}
+        maximum = settings.get('maxTimeoutSeconds', 180)
+        if type(maximum) is not int or not 1 <= maximum <= 86400:
+            raise ValueError('执行设置 maxTimeoutSeconds 须为 1–86400 秒')
+        cancelled = context.get('cancelled', lambda: False)
+        if cancelled():
+            raise RuntimeError('节点已暂停，未启动本机执行')
+        payload = {'code': arguments.get('code'), 'timeoutSeconds': max(1, min(maximum, int(arguments.get('timeoutSeconds', 90)))),
+                   'nodeId': node['id'], 'nodeVersion': node.get('version', 1), 'round': context.get('round', 1),
+                   'executionToken': context.get('executionToken'), 'materialIds': settings.get('materialIds', []),
+                   'resources': settings.get('resources', {key: settings[key] for key in ('cpuCores', 'gpuCount') if key in settings})}
+        if arguments.get('checkpoint') is not None:
+            payload['checkpoint'] = arguments['checkpoint']
+        job = jobs.submit(payload)
+        started_recorded, last_progress = False, time.monotonic()
+        while True:
+            current = jobs.get(job['id'])
+            if current['attempts'] and not started_recorded:
+                attempt = current['attempts'][-1]
+                run = self.root / 'runs' / job['id'] / ('attempt-' + str(attempt['number']))
+                code_digest = hashlib.sha256(payload['code'].encode('utf-8')).hexdigest()
+                if context.get('record_execution_started'):
+                    context['record_execution_started']({'tool': 'python_run', 'status': 'running', 'jobId': job['id'],
+                        'nodeId': node['id'], 'nodeVersion': node.get('version', 1), 'round': context.get('round', 1),
+                        'createdAt': attempt['startedAt'], 'workingDirectory': attempt.get('workingDirectory', (run / 'work').relative_to(self.root).as_posix()),
+                        'script': (run / 'experiment.py').relative_to(self.root).as_posix(), 'scriptSha256': code_digest,
+                        'stdoutPath': attempt['stdoutPath'], 'stderrPath': attempt['stderrPath'], 'dashboardBefore': None})
+                started_recorded = True
+            if current['status'] in jobs.terminal:
+                result = current.get('result') or {'tool': 'python_run', 'status': current['status'], 'jobId': current['id'],
+                                                  'returnCode': None, 'artifacts': [], 'stdout': '', 'stderr': '', 'evidence': []}
+                log('托管本机执行结束：' + current['id'] + ' · ' + current['status'])
+                return result
+            if cancelled() and current['status'] in ('queued', 'running'):
+                try:
+                    jobs.action(job['id'], 'cancel', current['revision'])
+                except ValueError:
+                    # Starting/completing the process may race the cancellation guard.
+                    continue
+            if time.monotonic() - last_progress >= 10:
+                log('托管本机进程 · ' + current['id'] + ' · ' + current['status'])
+                last_progress = time.monotonic()
+            time.sleep(.05)

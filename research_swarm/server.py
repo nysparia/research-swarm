@@ -348,6 +348,9 @@ def make_handler(app):
             parsed = urllib.parse.urlsplit(self.path)
             path = urllib.parse.unquote(parsed.path)
             try:
+                from .workspace_events import serve_events
+                if serve_events(self, app, path, parsed.query):
+                    return
                 if hasattr(app, 'read_api') and path.startswith('/api/'):
                     response = app.read_api(path, parsed.query)
                     if response is None:
