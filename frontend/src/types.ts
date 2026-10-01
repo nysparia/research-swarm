@@ -121,7 +121,7 @@ export interface Checkpoint {
 }
 export interface Snapshot {
   revision: number;
-  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; taskMode?: 'research' | 'reproduction' };
+  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; taskMode?: 'research' | 'reproduction'; researchDecision?: { id: string; question: string; options: { label: string; effect: string }[] } | null };
   stage: number;
   paused: boolean;
   status: 'idle' | 'running' | 'waiting_user' | 'failed' | 'completed';

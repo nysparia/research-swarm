@@ -1,4 +1,5 @@
 import type { Snapshot } from './types';
+import type { Workbench } from './workbench/types';
 
 export type TaskPhase = 'empty' | 'requirements' | 'retrieving' | 'researching' | 'completed' | 'failed';
 export interface TaskSummary { id: string; title: string; phase: TaskPhase; updatedAt: string; round: number }
@@ -16,5 +17,6 @@ export interface TaskDetail {
   artifacts: { name: string; kind: string; url: string }[];
   runs: RunSummary[];
   modelReady?: boolean;
+  workbench?: Workbench;
 }
 export const taskPhaseLabels: Record<TaskPhase, string> = { empty: '新任务', requirements: '准备研究', retrieving: '检索资料', researching: '研究中', completed: '本轮已结束', failed: '执行失败' };

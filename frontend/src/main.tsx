@@ -4,6 +4,7 @@ import { App as AntdApp, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import 'antd/dist/reset.css';
 import './conversation.css';
+import './workbench/workbench.css';
 import App from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -16,7 +17,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         colorBgLayout: '#f5f5f5',
         colorBorder: '#d9d9d9',
         borderRadius: 8,
-        fontSize: 13,
+        fontSize: 15,
         fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         controlHeight: 34,
       },

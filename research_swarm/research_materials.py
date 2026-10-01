@@ -46,12 +46,21 @@ def reject_links(path):
 
 
 def atomic_json(path, value):
+    path = Path(path).absolute()
+    # The randomized sibling can cross MAX_PATH even when the final path does
+    # not. Use Windows' extended spelling only for these local file operations.
+    if os.name == 'nt' and not str(path).startswith('\\\\?\\'):
+        spelling = str(path)
+        path = Path('\\\\?\\UNC\\' + spelling[2:] if spelling.startswith('\\\\') else '\\\\?\\' + spelling)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.pending')
-    with temporary.open('w', encoding='utf-8', newline='\n') as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+    try:
+        with temporary.open('w', encoding='utf-8', newline='\n') as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class ResearchMaterials:

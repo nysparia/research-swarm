@@ -282,8 +282,24 @@ class ExperimentJobs:
                     current['status'] = result['status']
                 result['status'] = current['status']
                 receipt_path = run / 'receipt.json'
-                atomic_json(receipt_path, result)
-                receipt_hash = digest(receipt_path)
+                try:
+                    atomic_json(receipt_path, result)
+                    receipt_hash = digest(receipt_path)
+                except Exception as exc:
+                    # A process result without a durable receipt is not a
+                    # verified experiment. Persist the failure and keep serving
+                    # the queue instead of abandoning this job as 'running'.
+                    reason = '实验执行记录保存失败：' + str(exc)
+                    current['status'] = 'failed'
+                    current['error'] = reason
+                    result.update(status='failed', error=reason, artifacts=[], evidence=[], metrics=None)
+                    result['stderr'] = (result.get('stderr', '') + '\n' + reason).strip()
+                    result.pop('receipt', None)
+                    current['attempts'][-1].update(status='failed', finishedAt=now(), error=reason)
+                    current['result'] = result
+                    current['checkpoint'] = checkpoint
+                    self._save(current)
+                    continue
                 receipt = {'path': receipt_path.relative_to(self.root).as_posix(), 'sha256': receipt_hash}
                 evidence = {'id': 'experiment:local:' + receipt_hash[:20], 'paperId': '', 'type': 'experiment', 'extractor': 'local_process',
                             'locator': receipt['path'], 'sha256': receipt_hash, 'tool': 'python_run', 'executionStatus': result['status'],
