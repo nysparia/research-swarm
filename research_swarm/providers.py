@@ -11,6 +11,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .search_settings import KEY_ENVS, PROFILES, normalize_search, update_search
+
 
 class ModelOutputError(ValueError):
     """A recoverable malformed or incomplete provider response."""
@@ -77,6 +79,10 @@ class Settings:
         data['providers'] = providers
         # Retain a shared main-slot alias for existing callers and on-disk readers.
         data['provider'] = providers['main']
+        data['search'] = normalize_search(data.get('search'))
+        keys = data.setdefault('searchKeys', {})
+        if not isinstance(keys, dict) or set(keys) - set(KEY_ENVS) or any(k is not None and not isinstance(k, str) for k in keys.values()):
+            raise ValueError('论文源密钥配置无效')
         return data
 
     @classmethod
@@ -132,6 +138,9 @@ class Settings:
             distinct = all(providers[role]['independentFromMain'] for role in ('judge', 'redteam'))
             distinct = distinct and self._different_identity(self.data['providers']['judge'], self.data['providers']['redteam'])
             return {'mode': self.data['mode'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
+                    'search': copy.deepcopy(self.data['search']),
+                    'searchProfiles': copy.deepcopy(PROFILES),
+                    'searchKeys': {source: {'hasKey': bool(key)} for source, key in self.search_credentials().items()},
                     'sourcePath': str(self.source or ''),
                     'presets': [{'id': 'ollama', 'label': 'Ollama 本机接口', 'type': 'openai', 'baseUrl': 'http://127.0.0.1:11434/v1'},
                                 {'id': 'lm-studio', 'label': 'LM Studio 本机接口', 'type': 'openai', 'baseUrl': 'http://127.0.0.1:1234/v1'}],
@@ -175,6 +184,19 @@ class Settings:
             if not isinstance(payload, dict):
                 raise ValueError('运行设置必须为对象')
             data = copy.deepcopy(self.data)
+            if 'search' in payload:
+                data['search'] = update_search(data.get('search'), payload['search'])
+            if 'searchKeys' in payload:
+                keys = payload['searchKeys']
+                if not isinstance(keys, dict) or set(keys) - set(KEY_ENVS):
+                    raise ValueError('论文源密钥配置无效')
+                for source, value in keys.items():
+                    if value is None:
+                        data['searchKeys'][source] = None  # Explicitly disable environment fallback.
+                    elif not isinstance(value, str):
+                        raise ValueError('论文源密钥须为文本')
+                    elif value.strip():
+                        data['searchKeys'][source] = value.strip()
             if 'mode' in payload:
                 if payload['mode'] not in ('evidence', 'llm'):
                     raise ValueError('运行模式必须为 evidence 或 llm')
@@ -223,9 +245,16 @@ class Settings:
         with self.lock:
             secrets = {key for provider in self.data['providers'].values()
                        for key in (self._key(provider), provider.get('apiKey', ''), os.getenv(provider.get('apiKeyEnv', ''), '')) if key}
+            secrets.update(key for key in self.search_credentials().values() if key)
             for key in sorted(secrets, key=len, reverse=True):
                 text = text.replace(key, '[已隐藏]')
         return re.sub(r'(?i)(bearer\s+|api[_-]?key[=: ]+)[^\s,;]+', r'\1[已隐藏]', text)[:600]
+
+    def search_credentials(self):
+        with self.lock:
+            configured = self.data.get('searchKeys', {})
+            return {source: (configured[source] or '') if source in configured else os.getenv(env, '')
+                    for source, env in KEY_ENVS.items()}
 
     def restore(self, previous: dict):
         """Restore an already validated local configuration after a rejected transaction."""

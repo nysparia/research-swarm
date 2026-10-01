@@ -161,11 +161,16 @@ class ResearchApplication:
             raise ValueError('每次补充检索数量为 1 至 30 篇')
         if not self.retrieval_lock.acquire(blocking=False):
             raise ValueError('已有补充检索正在执行，请等待当前检索完成')
-        operation = {'id': uuid.uuid4().hex, 'type': 'retrieval', 'nodeId': node.get('id') if node else None, 'message': '正在从原检索库补充论文：' + query, 'status': 'running', 'startedAt': utc_now()}
+        operation = {'id': uuid.uuid4().hex, 'type': 'retrieval', 'nodeId': node.get('id') if node else None, 'message': '正在多源检索并追踪引用：' + query, 'status': 'running', 'startedAt': utc_now()}
         self._operation(operation)
         try:
-            result = self.library.retrieve(query, top_k, node_id=node.get('sourceNodeId') if node else None)
-            operation.update(status='completed', message=result.get('message', '补充检索完成，准备导入论文与证据。'), finishedAt=utc_now())
+            with self.settings.lock:
+                search = copy.deepcopy(self.settings.data['search'])
+                keys = self.settings.search_credentials()
+            result = self.library.retrieve(query, top_k, node_id=node.get('sourceNodeId') if node else None,
+                                           search_settings=search, search_keys=keys)
+            operation.update(status='completed' if result.get('ok', True) else 'failed', message=result.get('message', '补充检索完成，准备导入论文与证据。'), finishedAt=utc_now())
+            operation['retrieval'] = result.get('retrieval', {})
             self._operation(operation)
             return result
         except Exception as exc:
@@ -181,7 +186,7 @@ class ResearchApplication:
             raise ValueError('该节点没有有效的外部检索授权')
         with self.operation_lock:
             count = self.search_budgets.get(budget_id, 0)
-            budget_limit = 8 if context.get('workflow') == 'autonomous' else 2
+            budget_limit = self.settings.public()['search']['maxCalls'] if context.get('workflow') == 'autonomous' else min(2, self.settings.public()['search']['maxCalls'])
             if count >= budget_limit:
                 raise ValueError(f'本轮已用完 {budget_limit} 次外部检索预算；请汇总实际取得的材料，明确未核验事项。')
             self.search_budgets[budget_id] = count + 1

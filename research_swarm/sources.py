@@ -5,13 +5,14 @@ Every destination has its own config, topic, SQLite DB, PDFs, and retrieval root
 Existing destinations are owned by a manifest and never reinitialized. Models
 configured later in a destination are preserved; original provider keys are not.
 
-The managed copy installs a narrow rules adapter: current-topic keywords replace
+The managed copy retains a legacy CLI rules adapter: current-topic keywords replace
 the old multimodal scoring/tree bias, public OpenAlex/Crossref/arXiv retrieval
 requires no model key, and automatic PDF download is disabled. These rules only
 rank and organize records; they do not assess scientific novelty or reproduction.
 Public APIs may be unavailable or return incomplete abstracts. Such records keep
 missing evidence rather than receiving synthetic quotes. Historical imported
-scores/facets retain their original provenance; later retrieval uses task rules.
+scores/facets retain their original provenance. Normal workspace retrieval now
+uses the host multi-source adapter; the copied CLI remains for compatibility.
 """
 
 from __future__ import annotations
@@ -122,6 +123,7 @@ def _new_config(original: dict, task_id: str, title: str, description: str) -> d
     secrets = _secret_values(original)
     public = {}
     defaults = {"openalex": "https://api.openalex.org/works", "crossref": "https://api.crossref.org/works",
+                "semantic_scholar": "https://api.semanticscholar.org/graph/v1",
                 "arxiv": "https://export.arxiv.org/api/query"}
     for name, default in defaults.items():
         item = sources.get(name) if isinstance(sources.get(name), dict) else {}

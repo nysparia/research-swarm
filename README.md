@@ -18,7 +18,9 @@ Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-
 
 随仓库交付 `dist/`，正常使用不需要 Node.js。需要 Python 3.10+；启动脚本在项目 `.venv` 安装依赖。Linux 需要 Bash、Python venv 和 pip，可通过 `RESEARCH_SWARM_PYTHON=/path/to/python3.10 bash start-research.sh` 指定解释器。脚本前台运行，Ctrl+C 停止；`bash start-research.sh --help` 查看参数。前端开发需要 Node.js 20.19+ / 22.12+。
 
-默认使用 `vendor/ai-access` 无密钥检索模板，从空任务开始，不依赖作者机器的资料目录。可用 `--source "资料目录"` 或 `RESEARCH_SWARM_SOURCE` 指定导入源，原资料只读。公开检索通过 OpenAlex，必要时回退到 Crossref / arXiv，不需要检索服务 Key。PDF 读取保留指纹和页码；缺全文、扫描页、下载失败均保留原因。文件存在不等于已经阅读或复现。
+默认使用 `vendor/ai-access` 模板，从空任务开始，不依赖作者机器的资料目录。可用 `--source "资料目录"` 或 `RESEARCH_SWARM_SOURCE` 指定导入源，原资料只读。受管任务采用多组查询，主动检索 OpenAlex、arXiv、Semantic Scholar，稀疏时由 Crossref 补充；按预算追踪一层参考文献和被引论文。检索不使用模型 Key，论文源可匿名尝试，也可在「模型与模式 → 论文检索深度与广度」配置论文源自己的可选 Key。服务可能限流，不能保证匿名访问可用。PDF 读取保留指纹和页码；缺全文、扫描页、下载失败均保留原因。文件存在不等于已经阅读或复现。
+
+标准检索默认最多 6 组查询、150 篇去重候选、36 次 API 请求、120 秒，选取 3 篇种子追踪一层引用；深入档最多 18 组查询、500 篇候选、100 次请求、300 秒、5 篇种子。所有预算可在设置中调整；它们是上限，不保证取得相应数量。候选池全部入库，`paper_retrieve` 的 `limit` 只限制模型优先阅读列表，更多论文可通过 `paper_search` 查询。近期查询与不限起始年份的经典查询同时保留。研究过程页展示各源数量、重复记录、实际请求、引用数量和失败原因。实现与边界见 [多源论文检索](docs/literature-search.md)。
 
 服务只监听 `127.0.0.1`，前端与 API 同源。各任务的对话、需求版本、SQLite、PDF、节点和产物独立保存在 `.research-state/tasks/<任务ID>/`。Key 保存于 `.research-state/config.local.json`，不通过配置查询 API 回传、不进入报告导出；**调用远程模型时仍会作为鉴权信息发给服务商，主张、证据和实验材料也可能进入请求。** 请勿分享状态目录。
 

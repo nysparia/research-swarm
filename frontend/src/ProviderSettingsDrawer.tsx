@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { Alert, App as AntdApp, Button, Drawer, Input, Segmented, Select, Space, Tag } from 'antd';
 import { api, messageOf } from './taskApi';
 import { inferenceLocation, isLoopbackEndpoint, providerFor, providerRoleLabels, providerRoles } from './providerState';
-import type { ProviderRole, Settings } from './types';
+import { SearchSettingsPanel } from './SearchSettingsPanel';
+import type { ProviderRole, SearchKeySource, Settings } from './types';
 
 interface ProviderDraft { type: string; baseUrl: string; model: string; apiKey: string }
 const draftsFrom = (settings: Settings | null): Record<ProviderRole, ProviderDraft> => {
@@ -19,7 +20,9 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
   const [error, setError] = useState('');
   const [testResult, setTestResult] = useState('');
   const [cleared, setCleared] = useState<ProviderRole[]>([]);
-  useEffect(() => { if (open) { setDrafts(draftsFrom(settings)); setMode(settings?.mode || 'evidence'); setError(''); setTestResult(''); setCleared([]); } }, [open, Boolean(settings)]);
+  const [search, setSearch] = useState(settings?.search);
+  const [searchKeys, setSearchKeys] = useState<Partial<Record<SearchKeySource, string | null>>>({});
+  useEffect(() => { if (open) { setDrafts(draftsFrom(settings)); setMode(settings?.mode || 'evidence'); setSearch(settings?.search); setSearchKeys({}); setError(''); setTestResult(''); setCleared([]); } }, [open, Boolean(settings)]);
   const draft = drafts[role];
   const saved = providerFor(settings, role);
   const change = (field: keyof ProviderDraft, value: string) => { setDrafts(previous => ({ ...previous, [role]: { ...previous[role], [field]: value } })); setCleared(previous => previous.filter(item => item !== role)); setTestResult(''); };
@@ -32,13 +35,13 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
         const endpointChanged = baseUrl.trim().replace(/\/+$/, '') !== providerFor(settings, item).baseUrl.replace(/\/+$/, '');
         return [item, { type, baseUrl: baseUrl.trim(), model: model.trim(), ...(apiKey.trim() ? { apiKey: apiKey.trim(), ...(endpointChanged ? { apiKeyEnv: '' } : {}) } : endpointChanged ? { clearKey: true } : {}) }];
       }));
-      const result = await api<Settings>('/settings', { mode, providers });
-      onSaved(result); setDrafts(draftsFrom(result)); setCleared([]);
+      const result = await api<Settings>('/settings', { mode, providers, ...(search ? { search } : {}), searchKeys });
+      onSaved(result); setDrafts(draftsFrom(result)); setSearch(result.search); setSearchKeys({}); setCleared([]);
       if (testConnection) {
         const tested = await api<{ ok?: boolean; error?: string; message?: string }>('/provider/test', { role }, 120000);
         if (tested.ok === false) throw new Error(tested.error || tested.message || '连接测试失败');
         setTestResult(`${providerRoleLabels[role]}：${tested.message || '连接测试成功'}`);
-      } else { void message.success('运行模式与模型角色已保存'); }
+      } else { void message.success('运行模式、模型角色与论文检索设置已保存'); }
     } catch (error) { setError(messageOf(error)); }
     finally { setBusy(''); }
   };
@@ -62,6 +65,7 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
     <label className="simple-label" htmlFor="provider-key">API Key</label>
     <Input.Password id="provider-key" value={draft.apiKey} onChange={event => change('apiKey', event.target.value)} autoComplete="new-password" placeholder={saved.hasKey ? '留空保留该角色现有密钥' : '回环端点可不填；远程端点需要密钥'} disabled={Boolean(busy)} />
     <p className="quiet-text">更换服务地址会清除旧密钥，避免将其发送到新端点；如需鉴权，请重新输入。{isLoopbackEndpoint(draft.baseUrl) ? '连接回环地址；端点本身是否转发到云端，需由你核对其部署。' : '将向此远程端点发送任务相关文本和证据片段。'} 模型名称或地址不同只表示配置不同，不证明厂商、模型族或判断在认知上独立。未配置裁判时，主模型结果标为未独立复核；不会静默使用主模型冒充裁判。</p>
+    {search && <SearchSettingsPanel value={search} onChange={setSearch} settings={settings} keys={searchKeys} onKeyChange={(source, value) => setSearchKeys(previous => ({ ...previous, [source]: value }))} disabled={Boolean(busy)} />}
     {testResult && <Alert type="success" showIcon description={testResult} />}
     {error && <Alert type="error" showIcon description={error} />}
   </Drawer>;

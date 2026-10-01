@@ -137,7 +137,7 @@ export interface Snapshot {
   report: { summary: string; claims: Claim[]; expressionId?: string; claimRefs?: { claimId: string; version: number }[]; unresolved: string[]; approved: boolean; ready?: boolean; structured?: Record<string, unknown> };
   claimGraph?: ClaimGraph;
   history: Record<string, unknown>[];
-  operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string }[];
+  operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string; retrieval?: LiteratureRetrievalSummary }[];
 }
 export interface Impact { revision: number; affectedIds: string[]; downstreamCount: number }
 export type ProviderRole = 'main' | 'judge' | 'redteam';
@@ -150,10 +150,42 @@ export interface ProviderSettings {
   ready?: boolean;
   independentFromMain?: boolean;
 }
+export interface SearchSettings {
+  profile: 'standard' | 'deep';
+  sources: ('openalex' | 'arxiv' | 'semantic_scholar')[];
+  crossrefFallback: boolean;
+  queryCount: number;
+  perQuery: number;
+  candidateLimit: number;
+  maxRequests: number;
+  maxSeconds: number;
+  maxCalls: number;
+  citationDepth: number;
+  seedCount: number;
+  neighborsPerSeed: number;
+  yearFrom: number;
+}
+export type SearchKeySource = 'openalex' | 'semantic_scholar';
+export interface LiteratureRetrievalSummary {
+  version?: string;
+  status?: 'complete' | 'partial' | 'failed';
+  candidateCount?: number;
+  duplicateCount?: number;
+  requestCount?: number;
+  cacheHits?: number;
+  retainedCitationEdges?: number;
+  sourceCounts?: Record<string, number>;
+  stopReason?: string | null;
+  queries?: { query: string; intent: string; yearFrom: number | null }[];
+  errors?: { source: string; stage: string; reason: string }[];
+}
 export interface Settings {
   mode: 'evidence' | 'llm';
   provider: ProviderSettings;
   providers?: Record<ProviderRole, ProviderSettings>;
+  search?: SearchSettings;
+  searchProfiles?: Record<'standard' | 'deep', Partial<SearchSettings>>;
+  searchKeys?: Record<SearchKeySource, { hasKey: boolean }>;
   sourcePath: string;
   capabilities: Record<string, unknown>;
 }

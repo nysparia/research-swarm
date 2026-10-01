@@ -1,6 +1,7 @@
 """Read a paper_research library without importing its mutating bootstrap code.
 
-Only ``retrieve`` runs the original project, in a separate process.  Child logs
+Only ``retrieve`` writes: owned tasks use the current multi-source adapter;
+external legacy projects run their CLI in a separate process. Child logs
 are deliberately not returned: upstream exceptions may contain provider keys.
 The adapter never infers that an experiment has been reproduced from a score.
 """
@@ -409,8 +410,9 @@ class Library:
                       resultLookupComplete=all(paper_id in paper_ids for paper_id in ids))
         return result
 
-    def retrieve(self, query: str, top_k: int = 10, node_id: str | None = None) -> dict:
-        """Explicitly invoke source CLI; return refreshed library and metadata.
+    def retrieve(self, query: str, top_k: int = 10, node_id: str | None = None,
+                 *, search_settings=None, search_keys=None) -> dict:
+        """Retrieve into an owned task or explicitly invoke a legacy source CLI.
 
         This is the only mutating operation: upstream may write papers, scores,
         PDFs, and reports to its currently active task.  It does not switch tasks.
@@ -425,6 +427,33 @@ class Library:
             layout = self._layout()
             if layout["db"] != layout["activeDb"]:
                 raise ValueError("此数据库不是原项目当前课题，无法安全调用原检索器。")
+            manifest_path = layout['root'] / '.research-swarm-source.json'
+            if manifest_path.is_file():
+                # Owned tasks use the current host retrieval implementation, so
+                # existing task runtimes need no destructive rebuild or migration.
+                manifest = _json_object(manifest_path)
+                if (manifest.get('version') != 1 or not layout['task'] or
+                        manifest.get('taskId') != layout['task'].name or
+                        not _inside(layout['db'], layout['root']) or not layout['db'].is_file()):
+                    raise ValueError('课题检索目录归属或数据库路径无效')
+                if node_id is not None and str(node_id) not in {n['id'] for n in self.load()['facetNodes']}:
+                    raise ValueError('检索节点不是当前论文库中的有效节点 ID')
+                from .retrieval import retrieve_candidates
+                from .retrieval_store import ingest
+                before = self.load()
+                cache_dir = layout['task'] / 'search-cache'
+                if not _inside(cache_dir.resolve(), layout['root']):
+                    raise ValueError('检索缓存目录越界')
+                result = retrieve_candidates(query.strip(), search_settings, keys=search_keys,
+                                             cache_dir=cache_dir)
+                if self._layout()['activeDb'] != layout['activeDb']:
+                    raise RuntimeError('检索期间切换了当前课题；结果未写入')
+                metadata = ingest(layout['db'], result, query.strip(), top_k, node_id)
+                after = self.load()
+                metadata.update(paperCountBefore=len(before['papers']), paperCountAfter=len(after['papers']))
+                status = metadata['status']
+                message = f"多源检索{'未完成' if status == 'failed' else '完成（部分来源或预算受限）' if status == 'partial' else '完成'}：候选 {metadata['candidateCount']} 篇，新增 {len(metadata['newPaperIds'])} 篇，返回 {len(metadata['resultPaperIds'])} 篇优先阅读，保留 {metadata['retainedCitationEdges']} 条引用关系。"
+                return {'ok': status != 'failed', 'library': after, 'retrieval': metadata, 'message': message}
             if not (layout["root"] / "paper_research" / "__main__.py").is_file():
                 raise ValueError("原项目缺少 paper_research 检索入口")
             before = self.load()

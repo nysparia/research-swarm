@@ -30,6 +30,10 @@
       "enabled": true,
       "base_url": "https://export.arxiv.org/api/query"
     },
+    "semantic_scholar": {
+      "enabled": true,
+      "base_url": "https://api.semanticscholar.org/graph/v1"
+    },
     "unpaywall": {
       "enabled": false,
       "email": ""
