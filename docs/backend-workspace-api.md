@@ -35,6 +35,12 @@ Tailwind 前端工作台已接入本页的后端能力。服务仍限本机同�
 
 POST `/interactions` 后以 GET `/interactions/<id>` 查询回复。`ask` 为异步解释，不改需求、不暂停研究、不调用实验工具。回答记录所依据的产物版本；回复期间产物变化时标记 stale。研究中普通聊天也走这条路径；现有明确的研究决策回答保留原行为。
 
+请求可带 `showInConversation:true` 与 `scope:"overview"|"node"`；节点范围同时指定 `nodeId`。用户消息、助手占位与最终回复持久化到主对话，包含引用版本。询问按任务串行处理，状态包括 running、queued、completed 和 failed，后续询问可以读取先前已完成的讨论。历史版本可询问，修改研究必须使用当前版本。
+
+节点状态投影使用 `node_state:<nodeId>` 稳定 ID，包含该节点的输入、输出、日志、状态与所属关系，不以实时耗时触发版本增长。读取历史任务、工作台或作业日志不会隐式启动研究引擎、领取实验队列或探测 GPU；推进需要显式操作。
+
+POST `/research-choice` 接收 `{decisionId,expectedRevision,optionIndex?,note?}`，校验当前决策身份及引擎版本。完成态新一轮使用 POST `/messages` 的 `{text,startNewRound:true,expectedRevision:文档版本}`；普通产物讨论不触发新轮次。
+
 `challenge`、`deepen`、`revise` 返回持久化提案。`revise` 另须提供完整 `replacement`，避免将一条修改指令误写成科学主张。涉及多个分支的报告要明确选择所属 nodeId。质疑启动核查，不把用户质疑当作证伪证据。
 
 提案含 affectedNodeIds、affectedArtifactIds、文档版本和引擎版本。确认使用：

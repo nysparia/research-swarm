@@ -1,5 +1,7 @@
 import copy
 import json
+import hashlib
+import sqlite3
 import tempfile
 import threading
 import time
@@ -81,6 +83,50 @@ class WorkspaceBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '停止|closed'):
             self.app.backend.jobs(self.task)
 
+    def test_get_existing_jobs_artifacts_logs_and_downloads_never_activates_queue(self):
+        runtime = self.app._data_root / self.task / 'runtime'
+        runtime.mkdir(parents=True)
+        queued_id, finished_id = 'job-' + 'a' * 32, 'job-' + 'b' * 32
+        attempt = runtime / 'runs' / finished_id / 'attempt-1'
+        attempt.mkdir(parents=True)
+        (attempt / 'stdout.txt').write_text('An already recorded measurement\n', encoding='utf-8')
+        (attempt / 'stderr.txt').write_text('', encoding='utf-8')
+        receipt = attempt / 'receipt.json'
+        receipt.write_text('{"status":"completed","artifacts":[]}', encoding='utf-8')
+        queued = {'id': queued_id, 'revision': 1, 'status': 'queued', 'createdAt': '2026-01-01',
+                  'request': {'code': 'raise AssertionError("Reading must never execute this")', 'materialIds': []},
+                  'attempts': []}
+        finished = {'id': finished_id, 'revision': 2, 'status': 'completed', 'createdAt': '2026-01-02',
+                    'request': {'materialIds': []}, 'attempts': [{
+                        'stdoutPath': (attempt / 'stdout.txt').relative_to(runtime).as_posix(),
+                        'stderrPath': (attempt / 'stderr.txt').relative_to(runtime).as_posix(),
+                        'receipt': {'path': receipt.relative_to(runtime).as_posix(),
+                                    'sha256': hashlib.sha256(receipt.read_bytes()).hexdigest()}}]}
+        path = runtime / 'jobs.sqlite3'
+        with sqlite3.connect(path) as connection:
+            connection.execute('CREATE TABLE jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+            connection.executemany('INSERT INTO jobs VALUES (?,?)', [(j['id'], json.dumps(j)) for j in (queued, finished)])
+        connection.close()
+        with patch('research_swarm.experiment_jobs.ExperimentJobs.__init__',
+                   side_effect=AssertionError('GET must not claim or start the queue')):
+            detail = self.app.read_api(self.base)[1]
+            self.assertEqual(next(a['content'] for a in detail['workbench']['artifacts']
+                                  if a['id'] == 'experiment_job:' + queued_id), queued)
+            self.assertEqual(self.read('jobs'), [queued, finished])
+            self.assertEqual(self.read('jobs/' + queued_id), queued)
+            self.assertEqual(self.read('jobs/' + queued_id + '/logs')['text'], '')
+            self.assertIn('recorded measurement', self.read('jobs/' + finished_id + '/logs')['text'])
+            download = self.app.read_api(self.base + '/jobs/' + finished_id + '/files',
+                                       'path=' + receipt.relative_to(runtime).as_posix())
+            self.assertEqual(download[0], 200)
+            self.assertEqual(download[1], receipt.read_bytes())
+        self.assertEqual(self.app.backend._jobs, {})
+        self.assertEqual(self.app._apps, {})
+        with sqlite3.connect(path) as connection:
+            saved = [json.loads(row[0]) for row in connection.execute('SELECT data FROM jobs ORDER BY id')]
+        connection.close()
+        self.assertEqual(saved, [queued, finished])
+
     def test_supervisor_preserves_current_download_artifact(self):
         engine = self.seed_research()
         root = self.app._data_root / self.task / 'runtime'
@@ -117,6 +163,235 @@ class WorkspaceBackendTests(unittest.TestCase):
         wait_until(lambda: not any(t.is_alive() for t in self.app._threads))
         self.assertEqual(self.app.detail(self.task)['document']['revision'], 2)
         self.assertEqual(engine.snapshot()['revision'], before)
+
+    def node_target(self, node_id='test-a'):
+        item = next(a for a in self.read('workbench')['artifacts'] if a['id'] == 'node_state:' + node_id)
+        return {'artifactId': item['id'], 'revision': item['revision']}
+
+    def conversation(self, question, **overrides):
+        payload = {'kind': 'ask', 'target': self.node_target(), 'nodeId': 'test-a', 'scope': 'node',
+                   'showInConversation': True, 'text': question}
+        payload.update(overrides)
+        return self.app.post(self.base + '/interactions', payload)
+
+    def test_fast_overview_answer_is_atomically_visible_without_duplicate_messages(self):
+        self.seed_research()
+        with patch.object(self.app, '_spawn', side_effect=lambda fn, *args: fn(*args)):
+            detail = self.app.backend.ask_overview(self.task, '现在哪个假设还缺证据？')
+        interaction = detail['interactions'][-1]
+        self.assertEqual(interaction['status'], 'completed')
+        messages = [m for m in detail['messages'] if m.get('interactionId') == interaction['id']]
+        self.assertEqual([m['role'] for m in messages], ['user', 'assistant'])
+        self.assertTrue(messages[1]['content'])
+        self.assertEqual(messages[1]['context']['scope'], 'overview')
+        self.assertEqual(messages[0]['context'], messages[1]['context'])
+        saved = json.loads((self.app._data_root / self.task / 'conversation.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['messages'], detail['messages'])
+
+    def test_conversation_answers_are_fifo_and_include_completed_prior_turns_only(self):
+        self.seed_research()
+        entered, release = threading.Event(), threading.Event()
+        prompts = []
+        def chat(messages, **kwargs):
+            prompts.append(copy.deepcopy(messages))
+            if len(prompts) == 1:
+                entered.set()
+                release.wait(5)
+                return '第一轮：这里没有实验结果，只能先设计比较。'
+            return '第二轮：沿用前面的比较，控制相同硬件。'
+        public = {'mode': 'llm', 'capabilities': {'modelReady': True}}
+        with patch.object(self.app.settings, 'public', return_value=public), patch.object(self.app.settings, 'chat', side_effect=chat):
+            first = self.conversation('有什么实验可以验证？')
+            self.assertTrue(entered.wait(3))
+            try:
+                second = self.conversation('那硬件怎么控制？')
+                self.assertEqual(second['status'], 'queued')
+                pending = [m for m in self.app.detail(self.task)['messages'] if m.get('interactionId')]
+                self.assertEqual([m['interactionId'] for m in pending], [first['id'], first['id'], second['id'], second['id']])
+            finally:
+                release.set()
+            wait_until(lambda: not any(t.is_alive() for t in self.app._threads))
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn('那硬件怎么控制', json.dumps(prompts[0], ensure_ascii=False))
+        self.assertIn('第一轮：这里没有实验结果', json.dumps(prompts[1], ensure_ascii=False))
+        self.assertIn('有什么实验可以验证', json.dumps(prompts[1], ensure_ascii=False))
+        messages = [m for m in self.app.detail(self.task)['messages'] if m.get('interactionId')]
+        self.assertEqual(len(messages), 4)
+        self.assertTrue(all(m['status'] == 'completed' for m in messages))
+
+    def test_failed_explanation_is_visible_in_conversation_and_preserves_research(self):
+        engine = self.seed_research()
+        revision = engine.snapshot()['revision']
+        public = {'mode': 'llm', 'capabilities': {'modelReady': True}}
+        with patch.object(self.app.settings, 'public', return_value=public), patch.object(self.app.settings, 'chat', side_effect=RuntimeError('请求失败 api_key=secret-test')):
+            result = self.conversation('为什么这个节点停了？')
+            wait_until(lambda: self.read('interactions/' + result['id'])['status'] == 'failed')
+        detail = self.app.detail(self.task)
+        reply = next(m for m in detail['messages'] if m.get('interactionId') == result['id'] and m['role'] == 'assistant')
+        self.assertEqual(reply['status'], 'failed')
+        self.assertIn('请求失败', reply['content'])
+        self.assertNotIn('secret-test', json.dumps(detail))
+        self.assertEqual(engine.snapshot()['revision'], revision)
+        self.assertEqual(detail['document']['revision'], 2)
+
+    def test_restart_recovers_queued_conversation_messages_durably(self):
+        self.seed_research()
+        with patch.object(self.app, '_spawn'):
+            first = self.conversation('先解释数据')
+            second = self.conversation('再解释测量范围')
+        self.assertEqual(first['status'], 'running')
+        self.assertEqual(second['status'], 'queued')
+        self.app.close()
+        self.app = WorkspaceApplication(self.source, self.root / 'state', import_existing=False)
+        detail = self.app.detail(self.task)
+        for interaction_id in (first['id'], second['id']):
+            interaction = next(i for i in detail['interactions'] if i['id'] == interaction_id)
+            self.assertEqual(interaction['status'], 'failed')
+            messages = [m for m in detail['messages'] if m.get('interactionId') == interaction_id]
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[1]['status'], 'failed')
+            self.assertIn('重启中断', messages[1]['content'])
+        saved = json.loads((self.app._data_root / self.task / 'conversation.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['interactions'], detail['interactions'])
+
+    def test_restart_reads_current_graph_without_starting_workers_or_invalidating_outputs(self):
+        from research_swarm.store import Store
+        engine = self.seed_research()
+        original = self.app.detail(self.task)
+        record = self.app._record(self.task)
+        # A prior completed report must not replace current unfinished research.
+        record['runs'] = [{'round': 1}]
+        old = engine.snapshot()
+        old['nodes'] = [n for n in old['nodes'] if n['id'] != 'test-b']
+        reports = self.app._data_root / self.task / 'reports'
+        reports.mkdir()
+        (reports / 'round-1.json').write_text(json.dumps(old), encoding='utf-8')
+        self.app._save(record)
+        engine_path = self.app._data_root / self.task / 'runtime' / 'swarm.sqlite'
+        self.app.close()
+        persisted = Store.read_snapshot(engine_path)
+        self.app = WorkspaceApplication(self.source, self.root / 'state', import_existing=False)
+        with patch.object(self.app, '_ensure_app', side_effect=AssertionError('Read must not start a runtime')):
+            detail = self.app.read_api(self.base)[1]
+            self.assertEqual({n['id'] for n in detail['state']['nodes']}, {n['id'] for n in persisted['nodes']})
+            self.assertIn('test-b', [n['id'] for n in detail['state']['nodes']])
+            self.assertEqual(detail['state']['snapshotOrigin'], 'stored')
+            self.assertTrue(detail['state']['paused'])
+            before = {a['id']: a for a in original['workbench']['artifacts'] if a['kind'] in ('claim', 'node_output')}
+            after = {a['id']: a for a in detail['workbench']['artifacts'] if a['kind'] in ('claim', 'node_output')}
+            self.assertEqual(before, after)
+            self.assertEqual(detail['workbench'], self.app.detail(self.task)['workbench'])
+            self.assertEqual(detail['workbench'], self.read('workbench'))
+        self.assertEqual(self.app._apps, {})
+        self.assertEqual(self.app._threads, [])
+        self.assertEqual(Store.read_snapshot(engine_path), persisted)
+
+    def test_interrupted_execution_is_shown_as_paused_without_rewriting_engine_state(self):
+        from research_swarm.store import Store
+        self.seed_research()
+        engine_path = self.app._data_root / self.task / 'runtime' / 'swarm.sqlite'
+        self.app.close()
+        store = Store(engine_path)
+        envelope = store.load()
+        persisted = envelope['state']
+        persisted.update(paused=False, status='running')
+        node = next(n for n in persisted['nodes'] if n['id'] == 'test-a')
+        node.update(status='running', output=None)
+        store.save(persisted, envelope['epoch'], library=envelope['library'])
+        store.close()
+        self.app = WorkspaceApplication(self.source, self.root / 'state', import_existing=False)
+        detail = self.app.detail(self.task)
+        displayed = next(n for n in detail['state']['nodes'] if n['id'] == 'test-a')
+        self.assertEqual(displayed['status'], 'pending')
+        self.assertTrue(displayed['interrupted'])
+        self.assertEqual(detail['state']['status'], 'idle')
+        self.assertTrue(detail['state']['paused'])
+        self.assertEqual(self.app._apps, {})
+        self.assertEqual(Store.read_snapshot(engine_path), persisted)
+
+    def test_completed_task_discussion_does_not_start_a_new_round(self):
+        engine = self.seed_research()
+        record = self.app._record(self.task)
+        record['phase'] = 'completed'
+        self.app._save(record)
+        document = copy.deepcopy(record['document'])
+        revision = engine.snapshot()['revision']
+        result = self.conversation('这个结果有哪些局限？')
+        wait_until(lambda: self.read('interactions/' + result['id'])['status'] == 'completed')
+        detail = self.app.detail(self.task)
+        self.assertEqual(detail['phase'], 'completed')
+        self.assertEqual(detail['document'], document)
+        self.assertEqual(engine.snapshot()['revision'], revision)
+
+    def test_pending_node_deepen_requires_confirmation_and_refuses_changed_context(self):
+        engine = self.seed_research()
+        with engine._lock:
+            node = next(n for n in engine._state['nodes'] if n['id'] == 'test-a')
+            node.update(status='pending', output=None)
+            engine._commit()
+        revision = engine.snapshot()['revision']
+        result = self.conversation('增加针对内存带宽的验证', kind='deepen')
+        proposal = result['proposal']
+        self.assertEqual(engine.snapshot()['revision'], revision)
+        self.assertEqual(result['status'], 'proposed')
+        self.assertIn('test-a', proposal['affectedNodeIds'])
+        self.assertNotIn('test-b', proposal['affectedNodeIds'])
+        path = self.base + '/proposals/' + proposal['id'] + '/apply'
+        with self.assertRaisesRegex(ValueError, '确认'):
+            self.app.post(path, {'expectedRevision': proposal['revision']})
+        with engine._lock:
+            node['input']['description'] = 'A changed request while the preview was open'
+            engine._commit()
+        with self.assertRaisesRegex(ValueError, '版本|变化'):
+            self.app.post(path, {'expectedRevision': proposal['revision'], 'confirmed': True})
+        with self.assertRaisesRegex(ValueError, '版本|变化'):
+            self.conversation('旧版本不能继续修改', target=result['target'], kind='deepen')
+
+    def test_reply_remains_pinned_to_selected_node_version_when_live_context_changes(self):
+        engine = self.seed_research()
+        entered, release = threading.Event(), threading.Event()
+        captured = []
+        def chat(messages, **kwargs):
+            captured.extend(messages)
+            entered.set()
+            release.wait(5)
+            return '这是所选版本的说明。'
+        public = {'mode': 'llm', 'capabilities': {'modelReady': True}}
+        with patch.object(self.app.settings, 'public', return_value=public), patch.object(self.app.settings, 'chat', side_effect=chat):
+            result = self.conversation('说明现在的输入')
+            self.assertTrue(entered.wait(3))
+            try:
+                with engine._lock:
+                    next(n for n in engine._state['nodes'] if n['id'] == 'test-a')['input']['description'] = 'A newer request'
+                    engine._commit()
+            finally:
+                release.set()
+            wait_until(lambda: not any(t.is_alive() for t in self.app._threads))
+        interaction = self.read('interactions/' + result['id'])
+        self.assertTrue(interaction['stale'])
+        self.assertEqual(interaction['basedOnRevision'], result['target']['revision'])
+        self.assertNotIn('A newer request', json.dumps(captured))
+        message = next(m for m in self.app.detail(self.task)['messages'] if m.get('interactionId') == result['id'] and m['role'] == 'assistant')
+        self.assertTrue(message['stale'])
+
+    def test_historical_node_can_be_asked_without_allowing_a_stale_intervention(self):
+        engine = self.seed_research()
+        target = self.node_target()
+        target['selection'] = {'quote': 'Method A reduces latency'}
+        with engine._lock:
+            node = next(n for n in engine._state['nodes'] if n['id'] == 'test-a')
+            node['input']['description'] = 'A changed current requirement'
+            node['output']['summary'] = 'A changed current result'
+            node['title'] = 'A changed current title'
+            engine._commit()
+        result = self.conversation('解释我选择的旧记录', target=target)
+        wait_until(lambda: self.read('interactions/' + result['id'])['status'] == 'completed')
+        reply = self.read('interactions/' + result['id'])
+        self.assertTrue(reply['stale'])
+        self.assertIn('Method A reduces latency', reply['reply'])
+        self.assertNotIn('A changed current requirement', reply['reply'])
+        with self.assertRaisesRegex(ValueError, '版本|变化'):
+            self.conversation('修改这个旧节点', target=target, kind='deepen')
 
     def test_confirmed_revision_only_invalidates_affected_branch_and_is_idempotent(self):
         engine = self.seed_research()

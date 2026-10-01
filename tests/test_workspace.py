@@ -78,6 +78,32 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(detail['document']['questions'])
         self.assertTrue(any('模型' in m['content'] for m in detail['messages'] if m['role'] == 'assistant'))
 
+    def test_explicit_new_round_requires_completed_phase_and_current_document(self):
+        task_id = self.new()
+        record = self.app._record(task_id)
+        record['document'].update(markdown='# Earlier research', revision=3)
+        for phase in ('empty', 'requirements', 'retrieving', 'researching', 'failed'):
+            record['phase'] = phase
+            with self.subTest(phase=phase), patch.object(self.app, '_ensure_app', side_effect=AssertionError('Must reject before restoration')):
+                with self.assertRaisesRegex(ValueError, '阶段|完成'):
+                    self.app.post(f'/api/tasks/{task_id}/messages', {
+                        'text': 'Investigate a new mechanism', 'startNewRound': True, 'expectedRevision': 3})
+            self.assertEqual(record['document']['revision'], 3)
+            self.assertEqual(record['messages'], [])
+        record['phase'] = 'completed'
+        with self.assertRaisesRegex(ValueError, '版本'):
+            self.app.post(f'/api/tasks/{task_id}/messages', {
+                'text': 'Investigate a new mechanism', 'startNewRound': True, 'expectedRevision': 2})
+        with patch.object(self.app, '_spawn') as spawn:
+            detail = self.app.post(f'/api/tasks/{task_id}/messages', {
+                'text': 'Investigate a new mechanism', 'startNewRound': True, 'expectedRevision': 3})
+        self.assertEqual(detail['phase'], 'requirements')
+        self.assertEqual(detail['document']['revision'], 4)
+        self.assertTrue(detail['document']['polishing'])
+        self.assertIn('Earlier research', detail['document']['markdown'])
+        self.assertIn('Investigate a new mechanism', detail['document']['markdown'])
+        self.assertEqual(spawn.call_count, 1)
+
     def test_start_requires_latest_finished_document_and_failure_visible(self):
         task_id = self.new()
         with self.assertRaises(ValueError):

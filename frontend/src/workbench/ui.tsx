@@ -1,4 +1,4 @@
-import { useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { BlurText } from '../BlurReveal';
 import { statusLabels } from './state';
 
@@ -10,7 +10,7 @@ const agentPortraits = [
 
 const paths: Record<string, string> = {
   more: 'M5 12h.01M12 12h.01M19 12h.01', attach: 'm8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L13 2', edit: 'm4 16 12-12 4 4-12 12H4v-4ZM14 6l4 4', target: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3M22 12h-3M12 22v-3M2 12h3M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
-  plus: 'M12 5v14M5 12h14', arrow: 'M7 17 17 7M7 7h10v10', send: 'm3 3 19 9-19 9 4-9-4-9Zm4 9h15',
+  plus: 'M12 5v14M5 12h14', arrow: 'M7 17 17 7M7 7h10v10', send: 'M12 20V4m-7 7 7-7 7 7', panel: 'M3 4h18v16H3V4Zm11 0v16', copy: 'M9 9h12v12H9zM15 5V3H3v12h2',
   menu: 'M4 6h16M4 12h16M4 18h16', close: 'm6 6 12 12M6 18 18 6',
   search: 'm21 21-4.5-4.5M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   board: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
@@ -39,10 +39,11 @@ export function Avatar({ index = 0, small = false }: { index?: number; small?: b
   // Frame the face from the unchanged, locally bundled official character portrait.
   return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="30 30 236 236" aria-hidden="true" focusable="false" style={{ overflow: 'hidden' }}><title>{portrait.name} · ウマ娘 プリティーダービー · © Cygames, Inc.</title><rect x="30" y="30" width="236" height="236" fill={portrait.background} /><image href={portrait.src} width="296" height="389" /></svg>;
 }
-export function Composer({ value, onChange, onSend, busy, centered = false, onAttach, onHistory }: { value: string; onChange: (value: string) => void; onSend: () => void; busy: boolean; centered?: boolean; onAttach?: () => void; onHistory?: () => void }) {
-  const composing = useRef(false);
-  return <form className={`sw-composer ${centered ? 'centered' : ''}`} onSubmit={event => { event.preventDefault(); if (!composing.current && !busy && value.trim()) onSend(); }}>
-    {!centered && onAttach && <Button type="button" icon="attach" aria-label="添加研究材料" onClick={onAttach} />}<textarea aria-label="与研究助手对话" placeholder={centered ? '描述你想研究的问题，或想复现的论文…' : '随时补充想法，调整研究方向…'} value={value} onChange={event => onChange(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composing.current) { event.preventDefault(); if (!busy && value.trim()) onSend(); } }} rows={centered ? 3 : 1} />
-    <div className="sw-composer-footer">{!centered && onHistory && <Button type="button" icon="chat" aria-label="查看完整对话" onClick={onHistory} />}<span><Icon name="spark" />{centered ? '从问题出发，一起形成有证据的研究' : 'Enter 发送 · Shift + Enter 换行'}</span><Button type="submit" variant="primary" icon="send" busy={busy} disabled={!value.trim()} aria-label="发送消息" /></div>
+export function Composer({ value, onChange, onSend, busy, centered = false, onAttach, onHistory, context, controls, placeholder, disabled = false }: { value: string; onChange: (value: string) => void; onSend: () => void; busy: boolean; centered?: boolean; onAttach?: () => void; onHistory?: () => void; context?: ReactNode; controls?: ReactNode; placeholder?: string; disabled?: boolean }) {
+  const composing = useRef(false); const input = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => { const element = input.current; if (!element) return; element.style.height = 'auto'; element.style.height = Math.min(180, Math.max(28, Math.ceil(element.scrollHeight) + 2)) + 'px'; }, [value]);
+  return <form className={`sw-composer ${centered ? 'centered' : ''}`} onSubmit={event => { event.preventDefault(); if (!composing.current && !busy && !disabled && value.trim()) onSend(); }}>
+    {context && <div className="sw-composer-context">{context}</div>}<textarea ref={input} aria-label="与研究助手对话" placeholder={placeholder || (centered ? '你想研究什么？' : '继续讨论…')} value={value} disabled={disabled} onChange={event => onChange(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && event.nativeEvent.keyCode !== 229 && !event.nativeEvent.isComposing && !composing.current) { event.preventDefault(); if (!busy && !disabled && value.trim()) onSend(); } }} rows={1} />
+    <div className="sw-composer-footer"><div>{onAttach && <Button type="button" icon="plus" aria-label="添加研究材料" onClick={onAttach} />}{onHistory && <Button type="button" icon="chat" aria-label="查看完整对话" onClick={onHistory} />}{controls}</div><Button type="submit" variant="primary" icon="send" busy={busy} disabled={disabled || !value.trim()} aria-label="发送消息" /></div>
   </form>;
 }

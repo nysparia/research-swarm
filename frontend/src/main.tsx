@@ -6,13 +6,14 @@ import 'antd/dist/reset.css';
 import './conversation.css';
 import './workbench/workbench.css';
 import './workbench/reference.css';
+import './workbench/production.css';
 import App from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConfigProvider locale={zhCN} button={{ autoInsertSpace: false }} theme={{
       token: {
-        colorPrimary: '#1677ff',
+        colorPrimary: '#252525',
         colorText: '#1f1f1f',
         colorTextSecondary: '#595959',
         colorBgLayout: '#f5f5f5',

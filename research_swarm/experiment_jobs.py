@@ -476,3 +476,40 @@ class ExperimentJobs:
             self._db.close()
             self._ownership.close()
             self._closed = True
+
+
+class ExperimentJobReader:
+    """Read existing records/logs without claiming or activating the queue."""
+
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+
+    def _rows(self, job_id=None):
+        path = self.root / 'jobs.sqlite3'
+        if not path.is_file():
+            return []
+        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=15)
+        try:
+            if job_id is None:
+                rows = connection.execute('SELECT data FROM jobs').fetchall()
+            else:
+                rows = connection.execute('SELECT data FROM jobs WHERE id=?', (job_id,)).fetchall()
+            return [json.loads(row[0]) for row in rows]
+        finally:
+            connection.close()
+
+    def get(self, job_id):
+        if not isinstance(job_id, str) or not re.fullmatch(r'job-[0-9a-f]{32}', job_id):
+            raise ValueError('Unknown experiment job')
+        rows = self._rows(job_id)
+        if not rows:
+            raise ValueError('Unknown experiment job')
+        return rows[0]
+
+    def list(self):
+        return sorted(self._rows(), key=lambda job: job['createdAt'])
+
+    def logs(self, job_id, stream='stdout', offset=0, limit=65536):
+        # Path containment, link rejection and bounded reading remain identical
+        # to the running manager's log endpoint.
+        return ExperimentJobs.logs(self, job_id, stream, offset, limit)

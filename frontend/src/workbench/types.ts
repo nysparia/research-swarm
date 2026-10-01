@@ -24,6 +24,7 @@ export interface Workbench {
 export type InteractionKind = 'ask' | 'challenge' | 'revise' | 'deepen';
 export interface InteractionRequest {
   kind: InteractionKind; text: string; replacement?: string; nodeId?: string;
+  showInConversation?: boolean; scope?: 'overview' | 'node';
   target: { artifactId: string; revision: number; selection?: { quote: string } };
 }
 export interface Proposal {
@@ -32,6 +33,6 @@ export interface Proposal {
   affectedNodeIds: string[]; affectedArtifactIds: string[]; blocks?: DraftBlock[];
   command?: { nodeId: string; kind: string; text: string };
 }
-export interface Interaction { id: string; status: string; reply?: string | null; error?: string; stale?: boolean; source?: string; proposal?: Proposal; text: string; target: InteractionRequest['target'] }
+export interface Interaction { id: string; status: string; reply?: string | null; error?: string; stale?: boolean; source?: string; proposal?: Proposal; text: string; target: InteractionRequest['target']; showInConversation?: boolean; kind?: InteractionKind; nodeId?: string; scope?: 'overview' | 'node'; context?: { scope: 'overview' | 'node'; nodeId?: string; artifactId: string; artifactRevision: number } }
 export interface ProposalReview { proposal: Proposal; request?: InteractionRequest; onApplied?: () => void }
 export interface Material { id: string; kind: string; filename?: string; name?: string; sha256?: string; bytes?: number; status?: string; [key: string]: unknown }

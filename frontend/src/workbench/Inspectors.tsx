@@ -12,7 +12,7 @@ import { Badge, Button, ErrorNote, Icon } from './ui';
 import { Discussion } from './Discussion';
 import { ExperimentDetail } from './Experiments';
 
-export function ArtifactInspector({ selected, detail, onClose, onPaper, onProposal, refresh }: { selected: Artifact | null; detail: TaskDetail; onClose: () => void; onPaper: (id: string) => void; onProposal: (review: ProposalReview) => void; refresh: () => Promise<void> }) {
+export function ArtifactInspector({ selected, detail, onClose, onPaper, onProposal, onDiscuss, refresh }: { selected: Artifact | null; detail: TaskDetail; onClose: () => void; onPaper: (id: string) => void; onProposal: (review: ProposalReview) => void; onDiscuss?: (artifact: Artifact) => void; refresh: () => Promise<void> }) {
   const [tab, setTab] = useState('content'); const [versions, setVersions] = useState<Artifact[]>([]); const [historic, setHistoric] = useState<Artifact | null>(null); const [error, setError] = useState('');
   const latest = detail.workbench?.artifacts.find(a => a.id === selected?.id) || selected;
   const artifact = historic || latest;
@@ -27,7 +27,7 @@ export function ArtifactInspector({ selected, detail, onClose, onPaper, onPropos
       {tab === 'content' && (artifact.kind === 'experiment_job' ? <ExperimentDetail key={artifact.id} taskId={detail.task.id} job={artifact.content as unknown as ExperimentJob} refresh={refresh} historical={!!historic || artifact.status === 'stale'} /> : artifact.kind === 'claim' && claim && detail.state && !historic ? <CanonicalClaimDetail claim={claim} state={detail.state} onPaper={onPaper} /> : <><Markdown text={plain(artifact.content.markdown) || plain(artifact.content.summary) || plain(artifact.content.statement)} /><details className="sw-details"><summary>结构化原始内容</summary><pre>{JSON.stringify(artifact.content, null, 2)}</pre></details></>)}
       {tab === 'sources' && <>{detail.state ? <TaskEvidence evidence={evidence} state={detail.state} onPaper={onPaper} /> : <p className="sw-muted">尚无证据记录。</p>}<h3>登记的来源位置</h3>{artifact.sourceRefs.length ? artifact.sourceRefs.map((ref, i) => <div key={i} className="sw-source"><strong>{plain(ref.type) || plain(ref.kind) || '来源记录'}</strong>{plain(ref.locator) && <p>{plain(ref.locator)}</p>}{plain(ref.path) && <code>{plain(ref.path)}</code>}{safeDownload(ref.url) && <a href={safeDownload(ref.url)} target="_blank" rel="noreferrer">打开来源 <Icon name="arrow" /></a>}{plain(ref.sha256) && <small>SHA256 {plain(ref.sha256)}</small>}</div>) : <p className="sw-no-evidence">无证据位置，不能据此推断主张成立。</p>}<details className="sw-details"><summary>关联节点与依赖</summary><pre>{JSON.stringify({ nodeIds: artifact.nodeIds, claimRefs: artifact.claimRefs, dependencies: artifact.dependencies, sourceRevision: artifact.sourceRevision }, null, 2)}</pre></details></>}
       {tab === 'versions' && (versions.length ? versions.map(version => <button key={version.revision} className="sw-version-row" onClick={() => { setHistoric(version); setTab('content'); }}><span>v{version.revision} · {version.title}</span><Badge status={version.status} /></button>) : <p className="sw-muted">暂无可读取的版本记录。</p>)}
-      {!historic && <div className="sw-modal-footer"><Discussion artifact={artifact} detail={detail} onProposal={onProposal} label="围绕这份产物继续讨论" /></div>}
+      {!historic && <div className="sw-modal-footer">{onDiscuss ? <Button icon="chat" onClick={() => onDiscuss(artifact)}>围绕这里继续讨论</Button> : <Discussion artifact={artifact} detail={detail} onProposal={onProposal} label="围绕这份产物继续讨论" />}</div>}
     </>}
   </Drawer>;
 }

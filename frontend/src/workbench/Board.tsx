@@ -1,3 +1,4 @@
+import { ResearchBoard } from './ResearchBoard';
 import { Suspense, useState } from 'react';
 import { Markdown } from '../Markdown';
 import { SearchHistory } from '../SearchHistory';
@@ -37,53 +38,7 @@ export function ClaimCard({ artifact, ...props }: { artifact: Artifact } & Pick<
   const data = artifact.content; const assessment = record(data.assessment);
   return <article className="sw-card sw-claim-card"><header><span className="sw-eyebrow">研究主张 · v{String(data.version || 1)}</span><Badge status={artifact.status} /></header><button className="sw-card-title-button" onClick={() => props.onInspect(artifact)}><h3><BlurText text={plain(data.statement) || artifact.title} /></h3></button>{plain(data.scope) && <p className="sw-muted">{plain(data.scope)}</p>}<div className="sw-claim-assessment">{plain(assessment.reason) || '还需要收集证据并完成论证。'}</div>{!artifact.evidenceIds.length && <p className="sw-no-evidence"><Icon name="link" />无证据 · 尚不能作为研究结论</p>}<ArtifactFooter artifact={artifact} {...props} /></article>;
 }
-export function Board(props: BoardProps) {
-  const { detail, onInspect, onTab } = props;
-  const artifacts = detail.workbench?.artifacts || [];
-  const current = artifacts.filter(a => a.status !== 'stale');
-  const jobArtifact = current.filter(a => a.kind === 'experiment_job').at(-1);
-  const job = jobArtifact?.content as unknown as ExperimentJob | undefined;
-  const output = current.filter(a => a.kind === 'node_output').at(-1);
-  const claim = current.find(a => a.kind === 'claim');
-  const focus = jobArtifact || output || claim;
-  const latest = [...(detail.state?.activities || [])].reverse();
-  const nodes = detail.state?.nodes.filter(n => n.active) || [];
-  const experimentNode = [...nodes].reverse().find(n => /实验|experiment|execute/i.test(n.role + ' ' + n.title));
-  const unresolved = detail.state?.report?.unresolved || [];
-  const decision = detail.state?.project.researchDecision;
-  const hasMetrics = metricRows(job?.result?.metrics).length > 0;
-  const proofCount = claim?.evidenceIds.length || 0;
-  const hasClaimExperiment = Boolean(claim && current.some(a => a.kind === 'experiment_job' && a.claimRefs.some(ref => claim.claimRefs.some(target => ref.claimId === target.claimId && ref.version === target.version)) && metricRows((a.content as unknown as ExperimentJob).result?.metrics).length));
-  return <div className="sw-board sw-reference-board">
-    {decision && <section className="sw-decision"><span>这一步，由你决定</span><h2>{decision.question}</h2><ol>{decision.options.map((option,i) => <li key={i}><strong>{i+1}. {option.label}</strong><p>{option.effect}</p></li>)}</ol><p>在下方回复你的选择，研究会据此继续。</p></section>}
-    <div className="sw-reference-grid">
-      <section className="sw-card sw-comparison-card">
-        <header><h2>{hasMetrics ? '实验结果与方法对照' : '统一条件下的方法对照'}</h2><Badge status={hasMetrics ? 'completed' : 'pending'} text={hasMetrics ? '实测数据' : '等待实测'} /></header>
-        {hasMetrics ? <MetricDisplay metrics={job?.result?.metrics} /> : <div className="sw-empty-plot"><div className="sw-plot-grid" aria-hidden="true" /><div className="sw-plot-empty-copy"><Icon name="lab" /><strong>实测数据还在路上</strong><p>{experimentNode ? '实验方案已记录，完成执行后在这里对照结果。' : '取得实验数据后，在这里对照方法与基线。'}</p><Button variant="outline" onClick={() => experimentNode ? props.onNode({id:experimentNode.id,nodeId:experimentNode.id,sourceKind:'agent',active:experimentNode.active,title:experimentNode.title,status:experimentNode.status,action:experimentNode.role}) : onTab('process')}>{experimentNode ? '查看实验方案' : '查看研究进展'} <Icon name="arrow" /></Button></div></div>}
-        <footer className="sw-comparison-footer"><span>{hasMetrics ? '指标来自实际执行记录' : '尚无实测值，不绘制示例曲线'}</span>{focus && <Discussion artifact={focus} detail={detail} onProposal={props.onProposal} label="关于这组对照" />}</footer>
-      </section>
-      <section className="sw-card sw-reference-claim">
-        <header><h2>{claim ? 'H1 · 研究主张' : '研究主张'}</h2><Badge status={claim?.status || 'pending'} /></header>
-        <div className="sw-proof-chips"><button onClick={() => claim ? onInspect(claim) : onTab('claims')}><Icon name="book" />{proofCount ? '证据记录 ' + proofCount : '尚无证据'}</button><span><Icon name="lab" />{hasClaimExperiment ? '有实验记录' : '实验待补齐'}</span></div>
-        <p className="sw-claim-excerpt">{claim ? plain(claim.content.statement) || claim.title : '从研究问题中形成可以验证的具体假设。'}</p>
-        <footer>{claim && <Discussion artifact={claim} detail={detail} onProposal={props.onProposal} label="就此追问" />}<Button variant="outline" onClick={() => claim ? onInspect(claim) : onTab('claims')}>查看依据 <Icon name="arrow" /></Button></footer>
-      </section>
-      <section className="sw-card sw-reference-experiment">
-        <header><h2>{job ? '实验 · ' + job.id.slice(-4).toUpperCase() : '实验执行'}</h2><Badge status={job?.status || experimentNode?.status || 'pending'} /></header>
-        <pre>{job?.result?.stderr || job?.result?.stdout || experimentNode?.logs.slice(-2).map(log => '[' + shortTime(log.at) + '] ' + log.message).join('\n') || '[等待] 尚无实验执行记录'}</pre>
-        <button className="sw-inline-link" onClick={() => jobArtifact ? onInspect(jobArtifact) : onTab('process')}>打开执行记录 <Icon name="arrow" /></button>
-      </section>
-      <section className="sw-card sw-reference-progress">
-        <header><h2>{output ? '当前研究产出' : '研究进展'}</h2><Button icon="arrow" onClick={() => onTab('process')}>全部记录</Button></header>
-        {output ? <><h3>{output.title}</h3><p className="sw-output-excerpt">{plain(output.content.summary) || '已产生结构化结果，可打开查看。'}</p><footer><Button icon="link" onClick={() => onInspect(output)}>查看完整内容与来源</Button><Discussion artifact={output} detail={detail} onProposal={props.onProposal} /></footer></> : <div className="sw-compact-activity">{latest.slice(0,2).map(item => <p key={item.id}><span>{item.actor === 'user' ? '你' : item.actor} · {shortTime(item.at)}</span>{item.message}</p>)}{!latest.length && <p>研究开始后，节点的真实进展会出现在这里。</p>}</div>}
-      </section>
-      <section className="sw-card sw-reference-summary">
-        {unresolved.length ? <><header><h2>还需要弄清楚</h2></header><ul>{unresolved.slice(0,2).map((item,i) => <li key={i}>{item}</li>)}</ul></> : <><Icon name="book" /><h3>{detail.workbench?.report.markdown ? '研究摘要已更新' : '对照摘要待形成'}</h3><p>{detail.workbench?.report.markdown ? '汇集当前结果、证据与适用边界。' : '取得结果后，逐步整理要点与图表。'}</p></>}
-        <Button onClick={() => onTab('report')}>打开研究报告 <Icon name="arrow" /></Button>
-      </section>
-    </div>
-  </div>;
-}
+export function Board(props: BoardProps) { return <ResearchBoard {...props} />; }
 export function ClaimsView(props: BoardProps) {
   const claims = props.detail.workbench?.artifacts.filter(a => a.kind === 'claim' && a.status !== 'stale') || [];
   return <div className="sw-module"><div className="sw-module-heading"><div><span className="sw-eyebrow">CLAIMS & EVIDENCE</span><h1>每条主张，都能追问到底。</h1></div><Badge status="draft" text={`${claims.length} 条主张`} /></div>{claims.length ? <div className="sw-claims-grid">{claims.map(artifact => <ClaimCard key={artifact.id} artifact={artifact} {...props} />)}</div> : <Empty title="尚未形成可验证的主张">节点产生主张后，将同时显示证据、反证和适用条件。</Empty>}</div>;

@@ -92,6 +92,21 @@ def project_workbench(record, state=None, files=(), previous=None):
         if not node.get('active', True) or (node.get('input') or {}).get('superseded'):
             artifact.update(status='stale', staleReason='Node archived or superseded')
         artifacts.append(artifact)
+    # A node can be discussed before it has produced an output. Keep its working
+    # context separate from scientific evidence and from output invalidation.
+    # Snapshot elapsedMs is a live clock, not a new revision of research intent.
+    for nid, node in nodes.items():
+        content = {key: copy.deepcopy(value) for key, value in node.items() if key != 'elapsedMs'}
+        refs = [{'claimId': cid, 'version': claim.get('version', 1)} for cid, claim in claims.items()
+                if claim.get('ownerNodeId') == nid]
+        output = node.get('output') if isinstance(node.get('output'), dict) else {}
+        ids = _unique(list(node.get('evidenceIds') or []) + list(output.get('evidenceIds') or []))
+        artifact = _artifact('node_state', nid, node.get('title'), content, node.get('status', 'pending'),
+                             [nid], refs, ids, source_revision=node.get('version', 1),
+                             source_refs=_source_refs(ids, evidence))
+        if not node.get('active', True) or (node.get('input') or {}).get('superseded'):
+            artifact.update(status='stale', staleReason='Node archived or superseded')
+        artifacts.append(artifact)
     for cid, claim in claims.items():
         version = claim.get('version', 1)
         relations = [r for r in graph.get('relations', []) if r.get('claimId') == cid and r.get('claimVersion') == version]

@@ -80,6 +80,51 @@ class WorkspaceResearchCoreTests(unittest.TestCase):
         self.assertFalse(self.app.engine.snapshot()['project'].get('researchDecision'))
         self.assertIn('探索机制', self.app.engine.snapshot()['project']['researchChoices'][-1]['answer'])
 
+    def test_explicit_research_choice_keeps_the_selected_decision_and_revision(self):
+        record = self.seed_decision()
+        self.app.engine._runner = None
+        revision = self.app.engine.snapshot()['revision']
+        before = len(record['messages'])
+        # Inspect the accepted decision before a worker can execute the next
+        # research step; this test does not supply an experimental runner.
+        with self.app.engine._condition:
+            detail = self.workspace.post(f'/api/tasks/{self.task_id}/research-choice', {
+                'decisionId': 'choice-1', 'expectedRevision': revision, 'optionIndex': 1, 'note': '保持 CPU 条件一致'})
+        self.assertEqual(detail['document']['revision'], 3)
+        self.assertEqual(detail['phase'], 'researching')
+        choice = self.app.engine.snapshot()['project']['researchChoices'][-1]
+        self.assertIn('探索机制', choice['answer'])
+        self.assertIn('保持 CPU 条件一致', choice['answer'])
+        self.assertEqual([m['role'] for m in detail['messages'][before:]], ['user', 'assistant'])
+        self.assertTrue(all(m['decisionId'] == 'choice-1' and m['stateRevision'] == revision
+                            for m in detail['messages'][before:]))
+
+    def test_explicit_decision_refuses_replaced_question_or_state_and_leaves_no_answer(self):
+        record = self.seed_decision()
+        self.app.engine._runner = None
+        revision = self.app.engine.snapshot()['revision']
+        path = f'/api/tasks/{self.task_id}/research-choice'
+        before = len(record['messages'])
+        with self.assertRaisesRegex(ValueError, '变化'):
+            self.workspace.post(path, {'decisionId': 'an-old-question', 'expectedRevision': revision, 'optionIndex': 1})
+        with self.assertRaisesRegex(ValueError, '版本|变化'):
+            self.workspace.post(path, {'decisionId': 'choice-1', 'expectedRevision': revision - 1, 'optionIndex': 1})
+        self.assertEqual(len(record['messages']), before)
+        self.assertEqual(self.app.engine.snapshot()['revision'], revision)
+        self.assertEqual(self.app.engine.snapshot()['project']['researchDecision']['id'], 'choice-1')
+
+    def test_new_round_request_cannot_be_interpreted_as_an_active_research_choice(self):
+        record = self.seed_decision()
+        self.app.engine._runner = None
+        revision = self.app.engine.snapshot()['revision']
+        before = len(record['messages'])
+        with self.assertRaisesRegex(ValueError, '阶段|完成'):
+            self.workspace.post(f'/api/tasks/{self.task_id}/messages', {
+                'text': '2', 'startNewRound': True, 'expectedRevision': 3})
+        self.assertEqual(len(record['messages']), before)
+        self.assertEqual(self.app.engine.snapshot()['revision'], revision)
+        self.assertEqual(self.app.engine.snapshot()['project']['researchDecision']['id'], 'choice-1')
+
     def test_decision_reply_after_restart_restores_runtime_before_routing(self):
         self.seed_decision()
         self.workspace.close()

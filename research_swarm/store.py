@@ -12,6 +12,26 @@ def _json(value):
 class Store:
     """Engine owns serialization; one transaction records state and its audit artifacts."""
 
+    @staticmethod
+    def read_snapshot(path):
+        """Inspect existing state without creating/migrating a DB or a scheduler."""
+        path = Path(path).resolve()
+        if not path.is_file():
+            return None
+        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=15)
+        try:
+            row = connection.execute('SELECT schema_version, payload FROM engine_state WHERE singleton=1').fetchone()
+            if row is None:
+                return None
+            if row[0] != 1:
+                raise ValueError('研究状态数据库版本不兼容，请保留原文件并使用对应版本打开')
+            envelope = json.loads(row[1])
+            if not isinstance(envelope, dict) or not isinstance(envelope.get('state'), dict):
+                raise ValueError('保存的研究状态格式无效')
+            return envelope['state']
+        finally:
+            connection.close()
+
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

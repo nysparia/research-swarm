@@ -122,6 +122,30 @@ class WorkbenchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.sync(other)
 
+    def test_pending_node_context_is_versioned_without_fabricating_outputs_or_clock_churn(self):
+        current = state()
+        current['nodes'][0].update(status='running', output=None, elapsedMs=10,
+                                   input={'description': 'Measure latency'}, logs=[])
+        first = self.store.sync(record(), current)
+        node = self.store.artifact('node_state:n1')
+        self.assertEqual(node['nodeIds'], ['n1'])
+        self.assertIsNone(node['content']['output'])
+        self.assertEqual(node['dependencies'], [])
+        self.assertNotIn('node_output:n1', [a['id'] for a in first['artifacts']])
+        current['revision'] += 1
+        current['nodes'][0]['elapsedMs'] = 2000
+        current['nodes'][2]['output']['summary'] = 'An unrelated result'
+        self.store.sync(record(), current)
+        self.assertEqual(self.store.artifact('node_state:n1')['revision'], node['revision'])
+        current['nodes'][0]['logs'].append({'message': 'Starting CPU measurement'})
+        self.store.sync(record(), current)
+        changed = self.store.artifact('node_state:n1')
+        self.assertEqual(changed['revision'], node['revision'] + 1)
+        self.assertEqual(self.store.artifact('node_state:n1', node['revision'])['content']['logs'], [])
+        current['nodes'][0]['active'] = False
+        self.store.sync(record(), current)
+        self.assertEqual(self.store.artifact('node_state:n1')['status'], 'stale')
+
     def test_live_report_citations_preserve_unassessed_truth(self):
         result = self.store.sync(record(), state(), [{'path': 'runs/one/raw.csv', 'name': 'raw', 'sha256': 'abc'}])
         claim = next(a for a in result['artifacts'] if a['kind'] == 'claim')

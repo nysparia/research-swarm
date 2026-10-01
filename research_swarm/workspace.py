@@ -54,9 +54,15 @@ class WorkspaceApplication:
                     record['error'] = '上次服务停止，已保留需求和执行记录。可以继续研究。'
                     record['token'] += 1
                 self._records[record['id']] = record
+                recovered_interactions = False
                 for interaction in record.get('interactions', []):
-                    if interaction.get('status') == 'running':
+                    if interaction.get('status') in ('running', 'queued'):
                         interaction.update(status='failed', error='解释请求因服务重启中断；已有研究和产物保留，可重新询问。', finishedAt=utc_now())
+                        if interaction.get('showInConversation'):
+                            self.backend._conversation_message(record, interaction, 'assistant')
+                        recovered_interactions = True
+                if recovered_interactions:
+                    self._save(record)
             except (ValueError, KeyError, TypeError):
                 continue
         marker = self.state_dir / 'source-imported.json'
@@ -171,7 +177,23 @@ class WorkspaceApplication:
             self._synchronize(record)
             app = self._apps.get(task_id)
             state = app.snapshot() if app else None
-            # Completed tasks remain inspectable without recreating any model worker on restart.
+            # Display persisted research without creating a worker or resuming
+            # execution. A previous round's report must not hide a newer graph.
+            if not state:
+                from .store import Store
+                state = Store.read_snapshot(self._data_root / task_id / 'runtime' / 'swarm.sqlite')
+                if state:
+                    state['paused'] = True
+                    state['snapshotOrigin'] = 'stored'
+                    if state.get('status') == 'running':
+                        state['status'] = 'idle'
+                    for node in state.get('nodes', []):
+                        if node.get('status') == 'running':
+                            node.update(status='pending', interrupted=True)
+                    for paper in state.get('papers', []):
+                        if paper.get('workerStatus') == 'running':
+                            paper['workerStatus'] = 'pending'
+            # Legacy completed tasks can still be inspected from their report.
             if not state and record['runs']:
                 path = self._data_root / task_id / 'reports' / f'round-{record["runs"][-1]["round"]}.json'
                 if path.is_file():
@@ -202,6 +224,7 @@ class WorkspaceApplication:
             return copy.deepcopy({'task': self._summary(record), 'phase': record['phase'], 'document': record['document'],
                                   'taskMode': record.get('taskMode', 'research'),
                                   'messages': record['messages'], 'state': state, 'error': record['error'], 'artifacts': artifacts,
+                                  'interactions': record.get('interactions', []),
                                   'runs': record['runs'], 'workbench': workbench,
                                   'modelReady': self.settings.public()['capabilities']['modelReady']})
 
@@ -371,8 +394,14 @@ class WorkspaceApplication:
         text = payload.get(key)
         if not isinstance(text, str) or not text.strip() or len(text) > 60000:
             raise ValueError('请输入 1 至 60000 字符的研究需求')
+        start_new_round = payload.get('startNewRound', False)
+        if type(start_new_round) is not bool or (editing and start_new_round):
+            raise ValueError('新一轮研究操作无效')
         with self._lock:
-            restore_runtime = self._record(task_id)['phase'] == 'researching' and task_id not in self._apps
+            record = self._record(task_id)
+            if start_new_round:
+                self._check_new_round(record, payload)
+            restore_runtime = record['phase'] == 'researching' and task_id not in self._apps
         # App restoration takes _apps_lock before _lock; do not invert that order.
         if restore_runtime:
             self._ensure_app(task_id)
@@ -381,6 +410,8 @@ class WorkspaceApplication:
                 raise ValueError('正在验证模型配置，请稍后再试')
             record = self._record(task_id)
             self._synchronize(record)
+            if start_new_round:
+                self._check_new_round(record, payload)
             if editing and payload.get('expectedRevision') != record['document']['revision']:
                 raise ValueError('需求文档版本已变化，请保留本地修改并重新同步')
             app = self._apps.get(task_id)
@@ -419,6 +450,14 @@ class WorkspaceApplication:
             self._save(record)
             self._spawn(self._polish, task_id, record['token'], revision, text, previous, editing)
             return self.detail(task_id)
+
+    @staticmethod
+    def _check_new_round(record, payload):
+        if record['phase'] != 'completed':
+            raise ValueError('任务状态已变化（阶段已切换）；只有已完成的研究才能开始新一轮，请刷新后重新确认')
+        if (type(payload.get('expectedRevision')) is not int
+                or payload['expectedRevision'] != record['document']['revision']):
+            raise ValueError('需求文档版本已变化，请同步后再开始新一轮研究')
 
     def _settings_busy(self):
         if self._configuring or any(r['phase'] == 'retrieving' or r['document']['polishing'] for r in self._records.values()):
@@ -553,8 +592,6 @@ class WorkspaceApplication:
         if not match:
             return None
         task_id, action = match.groups()
-        if task_id not in self._apps and (self._data_root / task_id / 'runtime' / 'swarm.sqlite').is_file():
-            self._ensure_app(task_id)
         detail = self.detail(task_id)
         if not action:
             return 200, detail, 'application/json', None
