@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import contextvars
 import io
 import json
 import re
@@ -12,6 +13,8 @@ import zipfile
 from pathlib import Path
 
 from .providers import Settings, parse_json_object
+from .concept_search import ObsoleteDraft
+from .requirement_concepts import carry_understanding, draft_with_concepts, require_clear_concepts
 from .server import APP_ROOT, ResearchApplication, export_bundle, utc_now
 
 
@@ -28,6 +31,7 @@ class WorkspaceApplication:
         self.max_workers = max_workers
         # One provider for every research task. Do not inherit unrelated source credentials.
         self.settings = Settings(self.state_dir, None)
+        self._draft_scope = contextvars.ContextVar('requirement_concept_scope', default=None)
         self._lock = threading.RLock()
         self._mutation_lock = threading.RLock()
         self._apps_lock = threading.RLock()
@@ -55,6 +59,14 @@ class WorkspaceApplication:
                     record['token'] += 1
                 self._records[record['id']] = record
                 recovered_interactions = False
+                for run in record.get('conceptSearchRuns', []):
+                    if run.get('status') == 'running':
+                        run.update(status='interrupted', stale=True, finishedAt=utc_now())
+                        recovered_interactions = True
+                understanding = record['document'].get('conceptUnderstanding')
+                if understanding and understanding.get('status') in ('checking', 'searching', 'drafting'):
+                    understanding['status'] = 'needs_clarification' if understanding.get('blockers') else 'interrupted'
+                    recovered_interactions = True
                 for interaction in record.get('interactions', []):
                     if interaction.get('status') in ('running', 'queued'):
                         interaction.update(status='failed', error='解释请求因服务重启中断；已有研究和产物保留，可重新询问。', finishedAt=utc_now())
@@ -252,9 +264,10 @@ class WorkspaceApplication:
         if settings['mode'] != 'llm' or not settings['capabilities']['modelReady']:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
-只返回JSON: {"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
+生成需求草稿时，必须返回JSON: {"action":"draft","conceptResolutions":[],"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
         prompt += '\n另返回 plan:{"capabilities":[能力ID],"rationale":"为何需要这些能力"}。能力仅选 review(综述)、investigation(机制研究)、reproduction(复现)、experimentation(实验)、paper_preparation(论文写作)，可以组合。只有用户明确希望撰写论文才选择 paper_preparation。'
-        result = parse_json_object(self.settings.chat([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}], max_tokens=6500, json_mode=True))
+        messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}]
+        result, understanding = draft_with_concepts(self, messages, text, previous, editing)
         if not isinstance(result.get('markdown'), str) or not result['markdown'].strip() or len(result['markdown']) > 60000:
             raise ValueError('模型没有返回有效需求文档，用户编辑已保存，可重试润色')
         requirements = result.get('requirements')
@@ -270,18 +283,27 @@ class WorkspaceApplication:
             raise ValueError('模型未给出有效学术检索式，可修改需求后重试')
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
-                'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': 'model', 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:4]], 'plan': result.get('plan')}
+                'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': result.get('_source', 'model'), 'requirements': normalized,
+                'queries': [q.strip()[:1000] for q in queries[:4]], 'plan': result.get('plan'), 'conceptUnderstanding': understanding}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
             state = self.detail(task_id).get('state')
             previous_report = (state or {}).get('report')
             with self._lock:
-                task_mode = self._record(task_id).get('taskMode', 'research')
+                record = self._record(task_id)
+                if self._closed or record['token'] != token or record['document']['revision'] != revision:
+                    return
+                task_mode = record.get('taskMode', 'research')
+                blockers = copy.deepcopy((record['document'].get('conceptUnderstanding') or {}).get('blockers', []))
             meter = self.settings.usage_context(task_id) if hasattr(self.settings, 'usage_context') else nullcontext()
-            with meter:
-                result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
+            scope = self._draft_scope.set({'taskId': task_id, 'token': token, 'revision': revision,
+                                          'origin': 'document_edit' if editing else 'requirements_message', 'blockers': blockers})
+            try:
+                with meter:
+                    result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
+            finally:
+                self._draft_scope.reset(scope)
             with self._lock:
                 record = self._record(task_id)
                 if self._closed or record['token'] != token or record['document']['revision'] != revision:
@@ -292,6 +314,13 @@ class WorkspaceApplication:
                 result['requirements'] = self.backend.requirements(record['draftBlocks'])
                 record['documentHistory'].append({'at': utc_now(), 'actor': 'AI' if result['source'] == 'model' else 'system', 'revision': revision + 1, 'markdown': result['markdown'], 'reason': result['summary']})
                 record['document'].update(markdown=result['markdown'], revision=revision + 1, polishing=False, polishedFrom=revision, source=result['source'], questions=result['questions'], error=None)
+                if 'conceptUnderstanding' in result:
+                    record['document']['conceptUnderstanding'] = copy.deepcopy(result['conceptUnderstanding'])
+                carry_understanding(record['document'], revision + 1)
+                run_id = (record['document'].get('conceptUnderstanding') or {}).get('runId')
+                for run in record.get('conceptSearchRuns', []):
+                    if run['id'] == run_id and not run.get('stale'):
+                        run['appliedRevision'] = revision + 1
                 record['compiled'] = result
                 from .research_plan import infer_plan, normalize_plan
                 try:
@@ -305,12 +334,15 @@ class WorkspaceApplication:
                 record['phase'] = 'requirements'
                 self._message(record, 'assistant', result['summary'], 'requirements')
                 self._save(record)
+        except ObsoleteDraft:
+            return
         except Exception as exc:
             with self._lock:
                 record = self._record(task_id)
-                if self._closed or record['token'] != token:
+                if self._closed or record['token'] != token or record['document']['revision'] != revision:
                     return
                 record['document'].update(polishing=False, error=self.settings.safe_error(exc))
+                carry_understanding(record['document'], revision, 'needs_clarification' if (record['document'].get('conceptUnderstanding') or {}).get('blockers') else 'failed')
                 self._message(record, 'assistant', '需求润色未完成，已保留你的原文。' + self.settings.safe_error(exc), 'requirements')
                 self._save(record)
 
@@ -447,6 +479,7 @@ class WorkspaceApplication:
                 record['draftBlocks'] = reconcile_blocks(raw, record.get('draftBlocks'), actor='user')
             record['documentHistory'].append({'at': utc_now(), 'actor': 'user', 'revision': revision, 'markdown': raw})
             record['document'].update(markdown=raw, revision=revision, polishing=True, polishedFrom=None, error=None)
+            carry_understanding(record['document'], revision, 'drafting' if editing else 'checking')
             self._save(record)
             self._spawn(self._polish, task_id, record['token'], revision, text, previous, editing)
             return self.detail(task_id)
@@ -540,6 +573,7 @@ class WorkspaceApplication:
                     raise ValueError('需求文档版本已变化，请同步后开始')
                 if record['document']['polishing'] or not record['compiled'] or record['document'].get('error'):
                     raise ValueError('请先完成需求文档整理，再开始研究')
+                require_clear_concepts(record['document'])
                 if record['phase'] in ('retrieving', 'researching'):
                     raise ValueError('本任务已经在研究中')
                 record['token'] += 1
@@ -595,6 +629,10 @@ class WorkspaceApplication:
         detail = self.detail(task_id)
         if not action:
             return 200, detail, 'application/json', None
+        if action == 'concept-search':
+            with self._lock:
+                runs = copy.deepcopy(self._record(task_id).get('conceptSearchRuns', []))
+            return 200, {'purpose': 'requirement_understanding', 'eligibleAsEvidence': False, 'runs': runs}, 'application/json', None
         if action.startswith('jobs/') and action.endswith('/files') and action.count('/') == 2:
             return self.backend.download_job(task_id, action.split('/')[1], query)
         with self._lock:
@@ -633,6 +671,7 @@ class WorkspaceApplication:
                 archive.writestr('requirements.md', detail['document']['markdown'].encode('utf-8'))
                 archive.writestr('conversation.json', json.dumps(detail['messages'], ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('requirement-history.json', json.dumps(self._record(task_id)['documentHistory'], ensure_ascii=False, indent=2).encode('utf-8'))
+                archive.writestr('concept-understanding.json', json.dumps({'purpose': 'requirement_understanding', 'eligibleAsEvidence': False, 'runs': self._record(task_id).get('conceptSearchRuns', [])}, ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('workbench.json', json.dumps(detail['workbench'], ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('interactions.json', json.dumps(self._record(task_id).get('interactions', []), ensure_ascii=False, indent=2).encode('utf-8'))
                 archive.writestr('proposals.json', json.dumps(self._record(task_id).get('proposals', []), ensure_ascii=False, indent=2).encode('utf-8'))

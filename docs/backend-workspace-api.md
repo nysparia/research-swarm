@@ -53,6 +53,9 @@ POST `/proposals/<id>/apply`（草稿也可 `/draft/apply` 加 proposalId）。�
 
 ## 持久化事件与用量
 
+- GET /api/tasks/{taskId}/concept-search：需求侧概念参考运行记录，只读、不启动搜索、不创建科学证据。
+- 概念搜索为内置能力。部署方通过状态目录 config.local.json 的 conceptSearch.apiKey 或 TAVILY_API_KEY 提供凭据；公开配置仅返回 conceptSearch:{provider,ready}，POST /api/settings 拒绝所有 conceptSearch 修改。任务 document.conceptUnderstanding 含进度、文档版本和核心待澄清项，/start 在核心概念未明确时拒绝启动。详见 [概念搜索](concept-search.md)。
+
 - GET `/events?after=0&limit=100`：events、nextCursor、more。
 - GET `/events/stream`：SSE，支持 Last-Event-ID 或 after；事件名 research，定期心跳，连接约 25 秒后重连。事件来自实际投影和操作记录，客户端按事件 ID 去重。
 - GET `/usage`：调用数、失败数、服务商实际返回的输入/输出 token 及分角色统计。缺失 usage 单独计数，实际金额保持未知，不伪造价格或账单。

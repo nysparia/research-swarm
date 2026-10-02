@@ -1,0 +1,18 @@
+[
+  {"id":"known-agents","category":"known","input":"多 Agent 系统一定比单 Agent 更好吗？","expected":["skip"]},
+  {"id":"known-rag","category":"known","input":"RAG 相比微调在知识更新方面有什么优势？","expected":["skip"]},
+  {"id":"known-latest","category":"known","input":"我想研究最新的 Transformer 长上下文方法，比较质量和推理成本。","expected":["skip"]},
+  {"id":"known-no-answer","category":"known","input":"LoRA 在什么条件下不如全量微调？需要实际证据，不预设结果。","expected":["skip"]},
+  {"id":"known-graph","category":"known","input":"图神经网络过平滑可以通过残差连接彻底解决吗？","expected":["skip"]},
+  {"id":"known-evidence","category":"known","input":"量化能否同时提升大语言模型的延迟和准确率？","expected":["skip"]},
+  {"id":"unknown-jev","category":"unknown","input":"jev 相比传统 LLM 有什么优势？","expected":["lookup"],"terms":["jev"],"note":"刻意未定义其所指；不得按相似拼写替换为另一个缩写。"},
+  {"id":"unknown-synthetic-a","category":"unknown","input":"研究 Zyrxel-9 与传统 LLM 的差别。","expected":["lookup"],"terms":["Zyrxel-9"],"note":"合成陌生术语，不对应已验证产品。"},
+  {"id":"unknown-synthetic-b","category":"unknown","input":"我想评估 Novathread-X 在推理系统中的适用性。","expected":["lookup"],"terms":["Novathread-X"],"note":"合成陌生术语。"},
+  {"id":"unknown-two","category":"unknown","input":"比较 Zyrxel-9 和 Novathread-X 的设计取舍。","expected":["lookup"],"terms":["Zyrxel-9","Novathread-X"]},
+  {"id":"defined-jev","category":"user_defined","input":"这里 JEV 是我定义的 joint embedding vector model：输入编码为向量，在共享嵌入空间预测下一状态，不生成文本。请研究它与生成式 LLM 的适用条件。","expected":["skip"]},
+  {"id":"defined-synthetic","category":"user_defined","input":"我把每隔两步合并一次相邻 token 的实验基线称为 Zyrxel-9。请研究这种策略对分类准确率和延迟的影响。","expected":["skip"]},
+  {"id":"defined-acronym","category":"user_defined","input":"本文把单个模型依次执行计划、检索和回答三个阶段称作 SRA。这是我的实验设置名，不是已有算法。研究它与多模型配置的差别。","expected":["skip"]},
+  {"id":"ambiguous-abc","category":"ambiguous","input":"ABC 方法是否优于传统机器学习？","expected":["lookup","clarify"],"terms":["ABC"]},
+  {"id":"ambiguous-rl","category":"ambiguous","input":"研究 RL 在我们系统中的收益，我还没说明这里 RL 的全称和业务领域。","expected":["lookup","clarify"],"terms":["RL"]},
+  {"id":"typo-unconfirmed","category":"ambiguous","input":"分析 jev 模型的适用场景；我不确定这个缩写是否拼写正确。","expected":["lookup","clarify"],"terms":["jev"]}
+]

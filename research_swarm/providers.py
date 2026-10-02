@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from .search_settings import KEY_ENVS, PROFILES, normalize_search, update_search
+from . import concept_search
 
 
 class ModelOutputError(ValueError):
@@ -88,6 +89,7 @@ class Settings:
         # Retain a shared main-slot alias for existing callers and on-disk readers.
         data['provider'] = providers['main']
         data['search'] = normalize_search(data.get('search'))
+        data['conceptSearch'] = concept_search.normalize_settings(data.get('conceptSearch'))
         keys = data.setdefault('searchKeys', {})
         if not isinstance(keys, dict) or set(keys) - set(KEY_ENVS) or any(k is not None and not isinstance(k, str) for k in keys.values()):
             raise ValueError('论文源密钥配置无效')
@@ -156,6 +158,7 @@ class Settings:
             distinct = distinct and self._different_identity(self.data['providers']['judge'], self.data['providers']['redteam'])
             return {'mode': self.data['mode'], 'reviewPolicy': self.data['reviewPolicy'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
                     'search': copy.deepcopy(self.data['search']),
+                    'conceptSearch': concept_search.public_settings(self.data['conceptSearch']),
                     'searchProfiles': copy.deepcopy(PROFILES),
                     'searchKeys': {source: {'hasKey': bool(key)} for source, key in self.search_credentials().items()},
                     'sourcePath': str(self.source or ''),
@@ -201,6 +204,8 @@ class Settings:
         with self.lock:
             if not isinstance(payload, dict):
                 raise ValueError('运行设置必须为对象')
+            if 'conceptSearch' in payload:
+                raise ValueError('概念搜索由服务端预配置，用户设置不支持修改；请刷新旧界面')
             data = copy.deepcopy(self.data)
             if 'reviewPolicy' in payload:
                 if payload['reviewPolicy'] not in ('independent', 'shared'):
@@ -336,9 +341,14 @@ class Settings:
             secrets = {key for provider in self.data['providers'].values()
                        for key in (self._key(provider), provider.get('apiKey', ''), os.getenv(provider.get('apiKeyEnv', ''), '')) if key}
             secrets.update(key for key in self.search_credentials().values() if key)
+            secrets.update(key for key in (self.concept_search_credential(), self.data.get('conceptSearch', {}).get('apiKey'), os.getenv('TAVILY_API_KEY', '')) if key)
             for key in sorted(secrets, key=len, reverse=True):
                 text = text.replace(key, '[已隐藏]')
         return re.sub(r'(?i)(bearer\s+|api[_-]?key[=: ]+)[^\s,;]+', r'\1[已隐藏]', text)[:600]
+
+    def concept_search_credential(self):
+        with self.lock:
+            return concept_search.credential(self.data.get('conceptSearch', {}))
 
     def search_credentials(self):
         with self.lock:

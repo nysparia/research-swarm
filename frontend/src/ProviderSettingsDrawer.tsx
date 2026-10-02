@@ -41,7 +41,7 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
         const tested = await api<{ ok?: boolean; error?: string; message?: string }>('/provider/test', { role }, 120000);
         if (tested.ok === false) throw new Error(tested.error || tested.message || '连接测试失败');
         setTestResult(`${providerRoleLabels[role]}：${tested.message || '连接测试成功'}`);
-      } else { void message.success('运行模式、模型角色与论文检索设置已保存'); }
+      } else { void message.success('运行设置已保存'); }
     } catch (error) { setError(messageOf(error)); }
     finally { setBusy(''); }
   };

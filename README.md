@@ -18,6 +18,8 @@ Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-
 
 ## 安装、资料与隐私
 
+[需求概念搜索](docs/concept-search.md)是模型需求撰写阶段的默认能力：只按需理解陌生术语，不搜索整句研究问题，不替代后续论文、Claim 和证据流程。Tavily 凭据由部署方在 config.local.json 的 conceptSearch.apiKey 或启动环境 TAVILY_API_KEY 中提供，用户无需额外开关或密钥。核心研究对象仍不清楚时保存草稿并请求澄清，自动保存不会触发搜索。
+
 随仓库交付 `dist/`，正常使用不需要 Node.js。需要 Python 3.10+；启动脚本在项目 `.venv` 安装依赖。Linux 需要 Bash、Python venv 和 pip，可通过 `RESEARCH_SWARM_PYTHON=/path/to/python3.10 bash start-research.sh` 指定解释器。脚本前台运行，Ctrl+C 停止；`bash start-research.sh --help` 查看参数。前端开发需要 Node.js 20.19+ / 22.12+。
 
 默认使用 `vendor/ai-access` 模板，从空任务开始，不依赖作者机器的资料目录。可用 `--source "资料目录"` 或 `RESEARCH_SWARM_SOURCE` 指定导入源，原资料只读。受管任务采用多组查询，主动检索 OpenAlex、arXiv、Semantic Scholar，稀疏时由 Crossref 补充；按预算追踪一层参考文献和被引论文。检索不使用模型 Key，论文源可匿名尝试，也可在「模型与模式 → 论文检索深度与广度」配置论文源自己的可选 Key。服务可能限流，不能保证匿名访问可用。PDF 读取保留指纹和页码；缺全文、扫描页、下载失败均保留原因。文件存在不等于已经阅读或复现。

@@ -585,6 +585,8 @@ class WorkspaceBackend:
         record['draftBlocks'] = blocks
         record['document'].update(markdown=markdown, revision=revision, polishing=False,
                                   polishedFrom=None, source='local', error=None)
+        from .requirement_concepts import carry_understanding
+        carry_understanding(record['document'], revision)
         record['documentHistory'].append({'at': now(), 'actor': 'user', 'revision': revision,
                                          'markdown': markdown, 'reason': reason})
         record['compiled'] = {'markdown': markdown, 'requirements': self.requirements(blocks),

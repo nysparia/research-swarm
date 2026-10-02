@@ -168,3 +168,11 @@
   .sw-production .sw-checkpoint { font-size:12px; align-items:flex-start; gap:6px; }
 }
 @media (prefers-reduced-motion:reduce) { .sw-thinking-dot { animation:none; } }
+
+.sw-concept-understanding { flex:none; max-height:240px; overflow:auto; padding:0 20px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.sw-concept-understanding:empty { display:none; }
+.sw-concept-understanding > details { padding:12px 0; border-top:1px solid #e4e7eb; }
+.sw-concept-understanding summary { cursor:pointer; font-weight:500; }
+.sw-concept-understanding p { margin:6px 0; }
+.sw-concept-understanding section { padding:8px 0; border-top:1px solid #e4e7eb; }
+.sw-concept-understanding a { text-decoration:underline; }

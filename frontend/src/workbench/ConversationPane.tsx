@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Markdown } from '../Markdown';
+import { conceptProgress } from '../conceptState';
 import type { TaskDetail } from '../taskTypes';
 import type { Interaction, ProposalReview } from './types';
 import { Button, Icon } from './ui';
@@ -32,7 +33,7 @@ export function ConversationPane({ detail, composer, onProposal, onRetry, onDeci
           {message.role === 'assistant' && interaction?.status === 'failed' && <div className="sw-message-failure" role="alert"><span>{interaction.error || '这次回复未完成'}</span><Button onClick={() => onRetry(interaction)}>重试</Button></div>}
           {message.role === 'user' && interaction?.proposal?.status === 'pending' && <Button className="sw-chat-proposal" variant="outline" onClick={() => onProposal({ proposal: interaction.proposal!, request: { kind: interaction.kind || 'deepen', text: interaction.text, target: interaction.target, nodeId: interaction.proposal?.command?.nodeId, replacement: interaction.proposal?.replacement, showInConversation: true } })}>查看调整影响 <Icon name="arrow" /></Button>}
         </article>; })}
-        {(detail.document.polishing || sending) && <div className="sw-dialogue-pending" role="status"><span className="sw-thinking-dot" />{detail.document.polishing ? '正在整理需求' : '正在发送'}</div>}
+        {(detail.document.polishing || sending) && <div className="sw-dialogue-pending" role="status"><span className="sw-thinking-dot" />{detail.document.polishing ? conceptProgress(detail.document) : '正在发送'}</div>}
         {detail.error && <div className="sw-message-failure" role="alert">{detail.error}</div>}
       </div>
     </div>

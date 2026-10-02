@@ -180,6 +180,7 @@ export interface LiteratureRetrievalSummary {
   errors?: { source: string; stage: string; reason: string }[];
 }
 export interface Settings {
+  conceptSearch?: { provider: 'tavily'; ready: boolean };
   mode: 'evidence' | 'llm';
   provider: ProviderSettings;
   providers?: Record<ProviderRole, ProviderSettings>;

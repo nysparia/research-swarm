@@ -3,7 +3,14 @@ import type { Workbench, Interaction } from './workbench/types';
 
 export type TaskPhase = 'empty' | 'requirements' | 'retrieving' | 'researching' | 'completed' | 'failed';
 export interface TaskSummary { id: string; title: string; phase: TaskPhase; updatedAt: string; round: number }
-export interface ResearchDocument { markdown: string; revision: number; polishing: boolean; polishedFrom?: number | null; source: 'model' | 'local'; questions: string[]; error: string | null }
+export interface ConceptUnderstanding {
+  status: 'checking' | 'searching' | 'drafting' | 'ready' | 'needs_clarification' | 'interrupted' | 'failed';
+  revision: number;
+  runId?: string;
+  blockers: { term: string; question: string }[];
+  unresolved?: { term: string; question: string }[];
+}
+export interface ResearchDocument { markdown: string; revision: number; polishing: boolean; polishedFrom?: number | null; source: 'model' | 'local'; questions: string[]; error: string | null; conceptUnderstanding?: ConceptUnderstanding }
 export interface Message { id: string; role: 'user' | 'assistant' | 'system'; content: string; at: string; kind?: 'requirements' | 'progress' | 'result'; interactionId?: string; status?: string; context?: { scope?: 'overview' | 'node'; nodeId?: string; nodeTitle?: string; artifactId: string; artifactRevision: number; artifactTitle?: string } }
 export interface RunSummary { round: number; at: string; summary: string; mode: string }
 export interface TaskDetail {
