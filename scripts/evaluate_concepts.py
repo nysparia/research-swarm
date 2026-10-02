@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from research_swarm.concept_search import normalize_concepts
+from research_swarm.concept_search import normalize_concepts, normalize_identity
 from research_swarm.providers import Settings, parse_json_object
 from research_swarm.requirement_concepts import PROTOCOL
 
@@ -30,7 +30,8 @@ def decision(result, case):
     resolutions = result.get('conceptResolutions', [])
     if not isinstance(resolutions, list):
         return 'invalid'
-    pending = [r for r in resolutions if isinstance(r, dict) and r.get('status') == 'unresolved' and r.get('core') is True]
+    pending = [r for r in resolutions if isinstance(r, dict) and r.get('status') == 'unresolved'
+               and normalize_identity(r, case['input'], '').get('core', r.get('core')) is True]
     if pending:
         expected = {t.casefold() for t in case.get('terms', [])}
         if expected and not any(str(r.get('term', '')).casefold() in expected for r in pending):

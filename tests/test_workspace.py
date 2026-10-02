@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import time
@@ -33,6 +34,106 @@ class WorkspaceTests(unittest.TestCase):
 
     def detail(self, task_id):
         return self.app.detail(task_id)
+
+    def test_save_retries_temporary_windows_locks_and_preserves_atomicity(self):
+        replace = Path.replace
+        for winerror in (5, 32, 33):
+            with self.subTest(winerror=winerror):
+                task_id = self.new()
+                record = self.app._record(task_id)
+                path = self.app._data_root / task_id / 'conversation.json'
+                before = path.read_bytes()
+                record['document']['markdown'] = 'New document'
+                error = PermissionError('temporarily locked')
+                error.winerror = winerror
+                sources = []
+
+                def locked(source, destination):
+                    sources.append(source)
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertEqual(json.loads(source.read_text(encoding='utf-8'))['document']['markdown'], 'New document')
+                    if len(sources) < 3:
+                        raise error
+                    return replace(source, destination)
+
+                with patch.object(Path, 'replace', locked), patch('research_swarm.workspace.time.sleep') as sleep:
+                    self.app._save(record)
+                self.assertEqual(len(sources), 3)
+                self.assertEqual(sleep.call_count, 2)
+                self.assertEqual(json.loads(path.read_text(encoding='utf-8')), record)
+                self.assertEqual(list(path.parent.glob('*.tmp')), [])
+                with patch.object(Path, 'replace', autospec=True, side_effect=replace) as next_replace:
+                    self.app._save(record)
+                self.assertNotEqual(sources[0], next_replace.call_args.args[0])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file sharing semantics')
+    def test_save_recovers_when_a_real_windows_reader_releases_the_file(self):
+        task_id = self.new()
+        record = self.app._record(task_id)
+        path = self.app._data_root / task_id / 'conversation.json'
+        record['document']['markdown'] = 'Update after reader releases file'
+        reader = path.open('rb')
+        denied = threading.Event()
+        errors = []
+        replace = Path.replace
+
+        def release_reader():
+            denied.wait(2)
+            reader.close()
+
+        def observed_replace(source, destination):
+            try:
+                return replace(source, destination)
+            except OSError as error:
+                errors.append(error)
+                denied.set()
+                raise
+
+        release = threading.Thread(target=release_reader)
+        release.start()
+        try:
+            with patch.object(Path, 'replace', observed_replace):
+                self.app._save(record)
+        finally:
+            denied.set()
+            release.join(timeout=3)
+            reader.close()
+        self.assertTrue(errors)
+        self.assertTrue(all(error.winerror in (5, 32, 33) for error in errors))
+        self.assertEqual(json.loads(path.read_text(encoding='utf-8')), record)
+        self.assertEqual(list(path.parent.glob('*.tmp')), [])
+
+    def test_save_stops_retrying_persistent_lock_without_damaging_existing_record(self):
+        task_id = self.new()
+        record = self.app._record(task_id)
+        path = self.app._data_root / task_id / 'conversation.json'
+        before = path.read_bytes()
+        record['document']['markdown'] = 'Unsaved update'
+        error = PermissionError('persistently locked')
+        error.winerror = 5
+        with patch.object(Path, 'replace', side_effect=error) as replace, patch('research_swarm.workspace.time.sleep') as sleep:
+            with self.assertRaises(PermissionError) as raised:
+                self.app._save(record)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(replace.call_count, 6)
+        self.assertEqual(sleep.call_count, 5)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(list(path.parent.glob('*.tmp')), [])
+
+    def test_save_does_not_retry_unrelated_io_errors(self):
+        task_id = self.new()
+        record = self.app._record(task_id)
+        path = self.app._data_root / task_id / 'conversation.json'
+        before = path.read_bytes()
+        for error in (PermissionError('permission denied'), OSError(28, 'disk full')):
+            with self.subTest(error=error), patch.object(Path, 'replace', side_effect=error) as replace, patch('research_swarm.workspace.time.sleep') as sleep:
+                with self.assertRaises(OSError) as raised:
+                    self.app._save(record)
+                self.assertIs(raised.exception, error)
+                replace.assert_called_once()
+                sleep.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(list(path.parent.glob('*.tmp')), [])
 
     def test_new_tasks_are_empty_and_independent_and_restart_persists(self):
         first, second = self.new(), self.new()
@@ -145,7 +246,8 @@ class WorkspaceTests(unittest.TestCase):
         self.new()
         observed = []
         self.app.settings.chat = lambda messages, max_tokens: observed.append(self.app.settings.public()) or 'OK'
-        result = self.app.post('/api/setup', {'apiKey': 'unit-test-key-not-real'})
+        with patch.object(self.app.settings, '_deepseek_models', return_value={'models': [{'id': 'deepseek-flash'}]}):
+            result = self.app.post('/api/setup', {'apiKey': 'unit-test-key-not-real', 'model': 'deepseek-flash'})
         self.assertTrue(result['ok'])
         self.assertEqual(result['mode'], 'llm')
         self.assertEqual(result['provider']['baseUrl'], 'https://api.deepseek.com')
@@ -159,8 +261,8 @@ class WorkspaceTests(unittest.TestCase):
         def reject(*args, **kwargs):
             raise ValueError('rejected unit-test-key-not-real')
         self.app.settings.chat = reject
-        with self.assertRaisesRegex(ValueError, '已隐藏'):
-            self.app.post('/api/setup', {'apiKey': 'unit-test-key-not-real'})
+        with patch.object(self.app.settings, '_deepseek_models', return_value={'models': [{'id': 'deepseek-flash'}]}), self.assertRaisesRegex(ValueError, '已隐藏'):
+            self.app.post('/api/setup', {'apiKey': 'unit-test-key-not-real', 'model': 'deepseek-flash'})
         self.assertEqual(self.app.settings.public(), before)
 
     def test_role_settings_and_connection_test_select_requested_role(self):

@@ -33,3 +33,9 @@ class ConceptEvaluationTests(unittest.TestCase):
         case = {'input': 'JEV 相比 LLM 有什么优势', 'terms': ['JEV']}
         self.assertEqual(decision({'action': 'resolve_concepts', 'concepts': [
             {'term': 'LLM', 'domain': 'AI', 'reason': 'unknown', 'core': True}]}, case), 'wrong_term')
+
+    def test_confirmed_identity_with_fact_gap_is_not_counted_as_clarification(self):
+        case = {'input': 'OpenAI 的 dots 是什么？', 'terms': ['dots']}
+        self.assertEqual(decision({'action': 'draft', 'conceptResolutions': [{'term': 'dots',
+            'status': 'unresolved', 'identityStatus': 'confirmed', 'qualifier': 'OpenAI',
+            'identityQuote': 'OpenAI 的 dots', 'core': True}]}, case), 'skip')

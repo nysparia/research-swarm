@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from research_swarm.concept_search import (ENDPOINT, ObsoleteDraft, TavilyConceptClient,
-    cached_results, credential, normalize_concepts, normalize_settings, query_for)
+    cached_results, credential, normalize_concepts, normalize_settings, query_for, source_kind)
 from research_swarm.providers import Settings
 from research_swarm.local_tools import LocalResearchTools
 from research_swarm.server import ResearchApplication
@@ -47,6 +47,81 @@ class ConceptClientTests(unittest.TestCase):
         self.assertNotIn('answer', result)
         self.assertEqual(result['status'], 'complete')
         self.assertNotIn('secret', json.dumps(result))
+
+    def test_publisher_context_is_preserved_and_official_domains_are_prioritized(self):
+        seen = []
+        def opener(request, timeout):
+            seen.append(json.loads(request.data))
+            if len(seen) == 1:
+                return response({'results': []})
+            return response({'results': [{'title': 'Dots', 'url': 'https://help.openai.com/en/articles/dots', 'content': 'Official dots description.'},
+                                         {'title': 'Guide', 'url': 'https://example.test/dots', 'content': 'Third party guide.'}]})
+        concept = normalize_concepts([{'term': 'dots', 'domain': 'AI agents', 'qualifier': 'OpenAI',
+                                      'identityStatus': 'confirmed', 'identityQuote': 'OpenAI 的 dots',
+                                      'reason': '产品定义需联网核实', 'core': False}], 'OpenAI 的 dots 是什么？', '')[0]
+        result = TavilyConceptClient('secret', opener=opener).search(concept)
+        self.assertIn('"OpenAI" "dots"', seen[0]['query'])
+        self.assertEqual(seen[0]['include_domains'], ['openai.com', 'help.openai.com', 'chatgpt.com', 'developers.openai.com'])
+        self.assertNotIn('include_domains', seen[1])
+        self.assertEqual({source['sourceKind'] for source in result['sources']}, {'official', 'third_party'})
+
+    def test_identity_requires_explicit_publisher_quote_but_not_definition(self):
+        normalized = normalize_concepts([{'term': 'dots', 'domain': 'AI agents', 'qualifier': 'OpenAI',
+                                          'identityStatus': 'confirmed', 'identityQuote': 'OpenAI 新推出的 dots',
+                                          'reason': '事实尚待核实', 'core': False}], 'OpenAI 新推出的 dots 是什么？', '')
+        self.assertEqual(normalized[0]['identityStatus'], 'confirmed')
+        with self.assertRaises(ValueError):
+            normalize_concepts([{'term': 'dots', 'domain': 'AI agents', 'qualifier': 'OpenAI',
+                                  'identityStatus': 'confirmed', 'identityQuote': 'dots 是什么',
+                                  'reason': '事实尚待核实', 'core': False}], 'OpenAI 新推出的 dots 是什么？', '')
+
+    def test_official_success_avoids_general_search_and_lookalike_hosts_are_not_official(self):
+        concept = {**CONCEPT, 'term': 'dots', 'qualifier': 'OpenAI'}
+        opener = Mock(return_value=response({'results': [
+            {'title': 'Dots', 'url': 'https://openai.com/index/dots/', 'content': 'Dots are agents.'},
+            {'title': 'Fake official Dots', 'url': 'https://openai.com.example.test/dots', 'content': 'Dots are agents.'}]}))
+        result = TavilyConceptClient('secret', opener=opener).search(concept)
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(len(result['sources']), 1)
+        self.assertEqual(result['sources'][0]['sourceKind'], 'official')
+        for url in ('https://openai.com.example.test', 'https://notopenai.com', 'https://example.test/openai.com'):
+            self.assertEqual(source_kind(url, concept), 'third_party')
+
+    def test_official_off_topic_results_trigger_general_fallback_with_shared_budget(self):
+        concept = {**CONCEPT, 'term': 'dots', 'qualifier': 'OpenAI'}
+        calls = []
+        def opener(request, timeout):
+            calls.append(json.loads(request.data))
+            if 'include_domains' in calls[-1]:
+                return response({'results': [{'title': 'OpenAI home', 'url': 'https://openai.com/', 'content': 'Welcome.'}]})
+            raise TimeoutError()
+        client = TavilyConceptClient('secret', opener=opener)
+        result = client.search(concept)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['requests'], 3)
+        exhausted = client.search(concept)
+        self.assertEqual(exhausted['status'], 'budget_exhausted')
+        self.assertEqual(exhausted['requests'], 0)
+
+    def test_context_inference_does_not_treat_comparison_cooccurrence_as_ownership(self):
+        for text in ('OpenAI新推出的dots是什么？', '就是OpenAI的dots，你自己去查吧'):
+            value = normalize_concepts([{**CONCEPT, 'term': 'dots'}], text, '')[0]
+            self.assertEqual(value['identityStatus'], 'confirmed')
+            self.assertFalse(value['core'])
+            self.assertIn('"openai" "dots"', query_for(value))
+        value = normalize_concepts([{**CONCEPT, 'term': 'dots'}], 'OpenAI 的 Codex 与 dots 有什么区别？', '')[0]
+        self.assertNotIn('identityStatus', value)
+        self.assertTrue(value['core'])
+
+    def test_cache_separates_publishers_and_old_protocol_versions(self):
+        concept = {**CONCEPT, 'qualifier': 'OpenAI'}
+        entry = TavilyConceptClient('key', opener=lambda *a, **k: response({'results': [
+            {'title': 'JEV', 'url': 'https://openai.com/jev', 'content': 'JEV definition'}]})).search(concept)
+        history = [{'lookups': [entry]}]
+        self.assertIsNotNone(cached_results(history, concept, entry['fetchedAt']))
+        self.assertIsNone(cached_results(history, {**concept, 'qualifier': 'Anthropic'}, entry['fetchedAt']))
+        with patch('research_swarm.concept_search.POLICY_VERSION', 'concept-definition-v1'):
+            self.assertIsNone(cached_results(history, concept, entry['fetchedAt']))
 
     def test_host_rejects_full_questions_unrelated_terms_and_arbitrary_query(self):
         for changes in ({'term': 'JEV 相比 LLM 有什么优势'}, {'term': 'made-up-unmentioned'},

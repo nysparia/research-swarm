@@ -10,9 +10,11 @@
 
 常见问题，例如「多 Agent 一定比单 Agent 更好吗」，理解相关概念即可直接写需求，结论由后续论文与实验研究取得。遇到不认识的术语时，模型申请理解术语，宿主组合定义查询。例如「jev 相比 LLM 有何优势」只查询 jev 的含义，不查询比较答案、不自动纠正为相似缩写。用户已经提供充分定义时无需搜索。
 
-核心研究对象仍不明确时，系统保存草稿并在对话中询问。请补充全称、定义或明确所指对象后再开始研究。网页匹配不等于已经识别；多义、无结果、接口不可用都不能靠猜测解除阻塞。普通文档编辑或切换模式不会静默清除已存在的核心疑问。非核心背景缺口不阻止研究。
+对象身份与事实核查分开处理：「OpenAI 的 dots」已明确用户所指对象，但并不证明产品已发布或任何能力已成立。官方定义、命名、发布时间、驱动模型与开放范围写入「待核实事项」，不要求用户提供定义、不阻止开始研究。只有真正的同名冲突或无法确定对象身份时，系统保存草稿并请求澄清。普通文档编辑或切换模式不会静默解除真实身份歧义；非核心背景缺口不阻止研究。
 
-缺少部署凭据或调用失败时，提示「概念搜索服务暂不可用」，不要求普通用户配置密钥。常见问题继续生成需求；不能确定核心研究对象时保留草稿并等待澄清。本地资料核验模式仍保持离线，默认能力不意味着每个问题都联网。
+概念请求可携带输入原文中的发布方或论文上下文 qualifier，身份 confirmed 须有同时包含术语和限定的逐字 identityQuote。查询保留限定上下文；OpenAI、Anthropic 使用宿主维护的官方域名集合，通过 Tavily include_domains 优先检索。没有可用、相关官方片段时在同一预算内补通用搜索，网络失败按原规则重试并保留原因。来源按实际域名标为 official/third_party，第三方定义仅作线索，不能证明官方命名、发布时间和开放范围；其他发布方暂用通用搜索，不由模型随意指定官方域名。
+
+缺少部署凭据或调用失败时，记录「概念搜索服务暂不可用」，不要求普通用户配置密钥。已确认对象继续生成需求，官方事实保留待核实；不能确定核心研究对象时保留草稿并等待澄清。本地资料核验模式仍保持离线，默认能力不意味着每个问题都联网。
 
 ## 处理边界
 
@@ -26,13 +28,13 @@
 
 固定预算：最多 3 个术语、总计 3 次 HTTP 请求（包括重试）、每次 4 条结果，单请求 socket 超时最多 10 秒，搜索截止预算 30 秒。截止时间在请求及读取阶段检查；已发出的请求受 socket 超时约束。429、短暂网络失败和部分 5xx 至多重试一次，Retry-After 超过剩余预算则停止。配置 basic/general、关闭 auto_parameters，开启 include_usage；缺少 usage 不推测费用。
 
-同任务内成功且非空的响应缓存 24 小时，以术语、领域和查询策略版本区分；失败和过期操作不复用。缓存只复用来源片段，当前语境仍重新解释。搜索和模型调用前后检查任务 token 与文档 revision；过期响应不会覆盖新文档或继续推进旧模型调用。
+同任务内成功且非空的响应缓存 24 小时，以术语、领域、qualifier 和查询策略版本区分；当前协议为 concept-definition-v2，v1 缓存不复用。失败和过期操作不复用。缓存只复用来源片段，当前语境仍重新解释。搜索和模型调用前后检查任务 token 与文档 revision；过期响应不会覆盖新文档或继续推进旧模型调用。
 
 ## API 与存储
 
 GET /api/settings 仅返回 conceptSearch:{provider:"tavily",ready:布尔值}，不返回 enabled、hasKey 或密钥。POST /api/settings 不接受任何 conceptSearch 字段（包括开关、密钥和清除操作）；工作区和旧版服务入口统一拒绝并提示刷新旧界面。正常修改 LLM 设置会保留服务端 Tavily 配置，保存设置不调用 Tavily。
 
-TaskDetail.document.conceptUnderstanding 为可选字段，含 status、revision、blockers，搜索发生时另有 runId；完成结果还含 unresolved 与 resolved。旧任务不补发搜索。status 包括 checking/searching/drafting/ready/needs_clarification/interrupted/failed。前端显示进度，后端 /start 也检查核心 blockers。
+TaskDetail.document.conceptUnderstanding 为可选字段，含 status、revision、blockers，搜索发生时另有 runId；完成结果还含 unresolved、resolved 与 policyVersion。条目新增 identityStatus（confirmed/ambiguous）、identityQuote、qualifier，core 作为兼容字段；已确认身份 core=false，真实身份歧义 core=true。ready 可以带 unresolved 事实缺口，前端显示待核实，后端 /start 仅检查身份 blockers。旧任务不补发搜索、不重写历史来源；下一次需求对话重新判断旧阻塞，确认对象后转为非阻塞待核实项。历史没有来源类型的条目显示「来源类型未标注」。
 
 GET /api/tasks/{id}/concept-search 只读取 purpose=requirement_understanding、eligibleAsEvidence=false 和 runs。没有通用搜索执行接口。每个运行记录包含输入文档版本、应用版本、查询、状态、来源片段、时间、请求次数、每次响应实际 usage 和是否过期。
 

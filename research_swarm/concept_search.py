@@ -12,12 +12,16 @@ import urllib.parse
 import urllib.request
 
 ENDPOINT = 'https://api.tavily.com/search'
-POLICY_VERSION = 'concept-definition-v1'
+POLICY_VERSION = 'concept-definition-v2'
 MAX_CONCEPTS = 3
 MAX_REQUESTS = 3
 MAX_SECONDS = 30
 CACHE_SECONDS = 24 * 60 * 60
 UNAVAILABLE_MESSAGE = '概念搜索服务暂不可用'
+OFFICIAL_DOMAINS = {
+    'openai': ('openai.com', 'help.openai.com', 'chatgpt.com', 'developers.openai.com'),
+    'anthropic': ('anthropic.com', 'claude.com', 'docs.claude.com', 'support.claude.com'),
+}
 
 
 class ObsoleteDraft(Exception):
@@ -64,13 +68,59 @@ def term_in_context(term, context):
     return re.search(left + re.escape(term) + right, context, re.IGNORECASE) is not None
 
 
+def normalize_identity(item, user_text, previous):
+    """Validate identity anchors separately from evidence for a definition."""
+    status = item.get('identityStatus')
+    if status is not None and status not in ('confirmed', 'ambiguous'):
+        raise ValueError('研究对象身份状态无效')
+    qualifier = item.get('qualifier') or ''
+    quote = item.get('identityQuote') or ''
+    contexts = (user_text, previous)
+    if qualifier:
+        qualifier = _phrase(qualifier, 64)
+        if len(qualifier.split()) > 8 or not any(term_in_context(qualifier, c) for c in contexts):
+            raise ValueError('发布方或上下文限定必须来自输入')
+    if quote:
+        if (not isinstance(quote, str) or not 3 <= len(quote) <= 1500
+                or not any(quote in c for c in contexts) or not term_in_context(item['term'], quote)
+                or (qualifier and not term_in_context(qualifier, quote))):
+            raise ValueError('身份确认须引用含术语和限定信息的输入原文')
+    # Older model responses omit identity fields. Recover only explicit ownership,
+    # never mere co-occurrence of a publisher and a term in a comparison.
+    infer_qualifier = status is None or (status == 'confirmed' and not qualifier)
+    inferred = False
+    if infer_qualifier:
+        for context in contexts:
+            for clause in re.split(r'[\n。？！!?；;]', context):
+                for publisher in OFFICIAL_DOMAINS:
+                    pattern = r'(?<![A-Za-z0-9_])' + re.escape(publisher) + r"(?:\s*(?:的|新推出的|推出的|发布的)\s*|\s+|['\u2019]s\s+)" + re.escape(item['term']) + r'(?![A-Za-z0-9_])'
+                    if re.search(pattern, clause, re.IGNORECASE) and len(clause) <= 1500:
+                        qualifier, quote, status = publisher, clause.strip(), 'confirmed'
+                        inferred = True
+                        break
+                if inferred:
+                    break
+            if inferred:
+                break
+    if status == 'confirmed' and not (qualifier and quote):
+        raise ValueError('身份确认需要发布方或上下文限定及逐字引用')
+    identity = {}
+    if qualifier:
+        identity['qualifier'] = qualifier
+    if quote:
+        identity['identityQuote'] = quote
+    if status:
+        identity.update(identityStatus=status, core=status == 'ambiguous')
+    return identity
+
+
 def normalize_concepts(items, user_text, previous):
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_CONCEPTS:
         raise ValueError('一次最多理解 3 个概念；其余未知项须向用户澄清')
     context = (user_text + '\n' + previous).casefold()
     normalized, seen = [], set()
     for item in items:
-        if not isinstance(item, dict) or set(item) - {'term', 'domain', 'reason', 'core'}:
+        if not isinstance(item, dict) or set(item) - {'term', 'domain', 'reason', 'core', 'qualifier', 'identityStatus', 'identityQuote'}:
             raise ValueError('概念请求格式无效；不得提交任意 query')
         term = _phrase(item.get('term'), 64)
         domain_value = item.get('domain') or 'computer science'
@@ -81,21 +131,36 @@ def normalize_concepts(items, user_text, previous):
         domain = _phrase(domain_value, 64)
         if not term_in_context(term, context) or len(term.split()) > 8 or len(domain.split()) > 6:
             raise ValueError('概念须来自用户输入或当前需求，且不能是整句问题')
-        if type(item.get('core')) is not bool or not isinstance(item.get('reason'), str) or not item['reason'].strip():
+        if ((type(item.get('core')) is not bool and not ('core' not in item and item.get('identityStatus') in ('confirmed', 'ambiguous')))
+                or not isinstance(item.get('reason'), str) or not item['reason'].strip()):
             raise ValueError('概念请求须说明未知原因及是否影响核心研究对象')
         if term.casefold() not in seen:
-            normalized.append({'term': term, 'domain': domain, 'reason': item['reason'][:500], 'core': item['core']})
+            normalized.append({'term': term, 'domain': domain, 'reason': item['reason'][:500], 'core': item.get('core', False),
+                               **normalize_identity({**item, 'term': term}, user_text, previous)})
             seen.add(term.casefold())
     return normalized
 
 
 def query_for(concept):
     term = concept['term'].replace('"', '').replace('“', '').replace('”', '')
+    qualifier = concept.get('qualifier', '').replace('"', '').replace('“', '').replace('”', '')
+    if qualifier:
+        return f'"{qualifier}" "{term}" {concept["domain"]} official definition product documentation'
     return f'"{term}" {concept["domain"]} definition full name official documentation'
 
 
+def official_domains(concept):
+    return OFFICIAL_DOMAINS.get(concept.get('qualifier', '').casefold(), ())
+
+
+def source_kind(url, concept):
+    host = (urllib.parse.urlsplit(url).hostname or '').lower().rstrip('.')
+    return 'official' if any(host == d or host.endswith('.' + d) for d in official_domains(concept)) else 'third_party'
+
+
 def cache_key(concept):
-    value = json.dumps([POLICY_VERSION, concept['term'].casefold(), concept['domain'].casefold()], ensure_ascii=False)
+    value = json.dumps([POLICY_VERSION, concept['term'].casefold(), concept['domain'].casefold(),
+                        concept.get('qualifier', '').casefold()], ensure_ascii=False)
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -137,6 +202,21 @@ class TavilyConceptClient:
         body = {'query': entry['query'], 'topic': 'general', 'search_depth': 'basic',
                 'auto_parameters': False, 'include_answer': False, 'include_raw_content': False,
                 'include_images': False, 'max_results': 4, 'include_usage': True}
+        domains = official_domains(concept)
+        passes = ('official', 'general') if domains else ('general',)
+        for search_scope in passes:
+            pass_body = dict(body)
+            if search_scope == 'official':
+                pass_body['include_domains'] = list(domains)
+            self._search_pass(entry, pass_body, concept, search_scope, current)
+            if entry['sources'] or entry['status'] in ('failed', 'budget_exhausted'):
+                break
+        if not current():
+            raise ObsoleteDraft()
+        return entry
+
+    def _search_pass(self, entry, body, concept, search_scope, current):
+        entry['status'] = 'failed'
         for attempt in range(2):
             if not current():
                 raise ObsoleteDraft()
@@ -183,10 +263,18 @@ class TavilyConceptClient:
                     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or not content.strip():
                         continue
                     sid = 'concept-ref-' + hashlib.sha256((url + content).encode()).hexdigest()[:16]
-                    entry['sources'].append({'id': sid, 'title': self._clean(raw.get('title'), 240), 'url': url, 'content': content})
+                    kind = source_kind(url, concept)
+                    if search_scope == 'official' and kind != 'official':
+                        continue
+                    if search_scope == 'official' and not term_in_context(concept['term'], str(raw.get('title') or '') + '\n' + content):
+                        continue
+                    entry['sources'].append({'id': sid, 'title': self._clean(raw.get('title'), 240),
+                                             'url': url, 'content': content, 'sourceKind': kind})
                 credits = (result.get('usage') or {}).get('credits') if isinstance(result.get('usage'), dict) else None
                 usage = {'credits': credits} if type(credits) in (int, float) and 0 <= credits < 100000 else None
-                entry['attempts'].append({'status': 'complete', 'usage': usage, 'requestId': self._clean(result.get('request_id'), 120)})
+                entry['attempts'].append({'status': 'complete', 'scope': search_scope, 'query': entry['query'],
+                                         'usage': usage, 'requestId': self._clean(result.get('request_id'), 120)})
+                entry.pop('error', None)
                 entry.update(status='complete' if entry['sources'] else 'empty', fetchedAt=time.time())
                 break
             except urllib.error.HTTPError as error:
@@ -202,11 +290,9 @@ class TavilyConceptClient:
                 retry = True
             except (ValueError, TypeError, UnicodeError):
                 entry['error'] = UNAVAILABLE_MESSAGE + '（响应格式无效或超出大小限制）'
-            entry['attempts'].append({'status': 'failed', 'error': entry['error'], 'usage': None})
+            entry['attempts'].append({'status': 'failed', 'scope': search_scope, 'query': entry['query'],
+                                     'error': entry['error'], 'usage': None})
             if not retry or attempt or self.request_count >= MAX_REQUESTS or delay >= self.deadline - self._clock():
                 break
             if delay:
                 self._sleep(delay)
-        if not current():
-            raise ObsoleteDraft()
-        return entry

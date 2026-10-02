@@ -17,6 +17,9 @@ class SharedProviderTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        models = patch.object(Settings, '_deepseek_models', return_value={'models': [{'id': 'deepseek-flash'}, {'id': 'deepseek-chat'}]})
+        models.start()
+        self.addCleanup(models.stop)
 
     def test_one_key_configure_preserves_secret_and_uses_official_endpoint(self):
         settings = Settings(self.root, None)
@@ -70,7 +73,7 @@ class SharedProviderTests(unittest.TestCase):
 
     def test_real_usage_persists_per_task_including_retries_and_transport_errors(self):
         settings = Settings(self.root, None)
-        settings.configure_deepseek({'apiKey': 'secret'})
+        settings.configure_deepseek({'apiKey': 'secret', 'model': 'deepseek-flash'})
         response = {'choices': [{'message': {'content': 'OK'}}],
                     'usage': {'prompt_tokens': 11, 'completion_tokens': 7, 'total_tokens': 18}}
         with settings.usage_context('task-a', 'node-a'), patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
@@ -89,7 +92,7 @@ class SharedProviderTests(unittest.TestCase):
 
     def test_format_retry_counts_each_actual_response_and_its_tokens(self):
         settings = Settings(self.root, None)
-        settings.configure_deepseek({'apiKey': 'secret'})
+        settings.configure_deepseek({'apiKey': 'secret', 'model': 'deepseek-flash'})
         def response(content):
             return io.BytesIO(json.dumps({'choices': [{'message': {'content': content}}],
                            'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode())
@@ -102,7 +105,7 @@ class SharedProviderTests(unittest.TestCase):
     def test_context_is_thread_local_and_restores_nested_task(self):
         from concurrent.futures import ThreadPoolExecutor
         settings = Settings(self.root, None)
-        settings.configure_deepseek({'apiKey': 'secret'})
+        settings.configure_deepseek({'apiKey': 'secret', 'model': 'deepseek-flash'})
         def call(task):
             with settings.usage_context(task):
                 settings.chat([{'role': 'user', 'content': task}])

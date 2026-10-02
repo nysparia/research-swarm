@@ -207,6 +207,8 @@ class ResearchApplication:
         return self._retrieve({'query': query, 'topK': limit}, node)
 
     def post(self, path, payload):
+        if path == '/api/provider/models/deepseek':
+            return self.settings.deepseek_models(payload)
         if path.startswith('/api/actions/'):
             action = path.rsplit('/', 1)[-1]
             if action in ('refresh-library',):

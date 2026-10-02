@@ -94,6 +94,15 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(chat.call_args.kwargs['role'], 'redteam')
             self.assertNotIn('unexpected-sensitive', json.dumps(result))
 
+    def test_official_model_discovery_routes_without_touching_engine(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = ResearchApplication.__new__(ResearchApplication)
+            app.settings = Settings(Path(temp), None)
+            with patch('urllib.request.urlopen', return_value=io.BytesIO(b'{"data":[{"id":"deepseek-flash"}]}')):
+                result = app.post('/api/provider/models/deepseek', {'apiKey': 'unsaved-secret'})
+            self.assertEqual(result, {'models': [{'id': 'deepseek-flash'}]})
+            self.assertFalse(app.settings.path.exists())
+
     def test_source_environment_overrides_portable_vendor_default(self):
         command = [sys.executable, '-X', 'utf8', '-c', 'from research_swarm.server import DEFAULT_SOURCE; print(DEFAULT_SOURCE)']
         env = dict(os.environ, RESEARCH_SWARM_SOURCE=str(Path.cwd() / 'custom-source'))

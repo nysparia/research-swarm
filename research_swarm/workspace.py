@@ -7,6 +7,7 @@ import io
 import json
 import re
 import threading
+import time
 from contextlib import nullcontext
 import uuid
 import zipfile
@@ -59,13 +60,16 @@ class WorkspaceApplication:
                     record['token'] += 1
                 self._records[record['id']] = record
                 recovered_interactions = False
+                interrupted_runs = set()
                 for run in record.get('conceptSearchRuns', []):
                     if run.get('status') == 'running':
                         run.update(status='interrupted', stale=True, finishedAt=utc_now())
+                        interrupted_runs.add(run['id'])
                         recovered_interactions = True
                 understanding = record['document'].get('conceptUnderstanding')
-                if understanding and understanding.get('status') in ('checking', 'searching', 'drafting'):
-                    understanding['status'] = 'needs_clarification' if understanding.get('blockers') else 'interrupted'
+                if understanding and (understanding.get('status') in ('checking', 'searching', 'drafting')
+                                      or understanding.get('runId') in interrupted_runs):
+                    understanding['status'] = 'interrupted'
                     recovered_interactions = True
                 for interaction in record.get('interactions', []):
                     if interaction.get('status') in ('running', 'queued'):
@@ -131,13 +135,28 @@ class WorkspaceApplication:
         return self._records[task_id]
 
     def _save(self, record):
-        record['updatedAt'] = utc_now()
-        directory = self._data_root / record['id']
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / 'conversation.json'
-        temporary = path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding='utf-8')
-        temporary.replace(path)
+        with self._lock:
+            record['updatedAt'] = utc_now()
+            directory = self._data_root / record['id']
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / 'conversation.json'
+            temporary = directory / f'.conversation-{identity()}.tmp'
+            try:
+                temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding='utf-8')
+                # Windows readers and scanners can briefly prevent an atomic replacement.
+                for attempt in range(6):
+                    try:
+                        temporary.replace(path)
+                        break
+                    except OSError as exc:
+                        if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 5:
+                            raise
+                        time.sleep(.05 * 2 ** attempt)
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @staticmethod
     def _message(record, role, content, kind=None):
@@ -265,6 +284,7 @@ class WorkspaceApplication:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
 生成需求草稿时，必须返回JSON: {"action":"draft","conceptResolutions":[],"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
+        prompt += '\n已明确品牌、发布方或论文上下文的研究对象，不要求用户再提供定义。官方产品定义、发布状态、模型与能力边界属于需要联网核查的事实，写入待核实事项；未找到官方来源时保留原对象和未知项，允许开始研究。清理已解除的旧概念澄清问题，不在 summary 或 questions 中把事实核查转嫁给用户。'
         prompt += '\n另返回 plan:{"capabilities":[能力ID],"rationale":"为何需要这些能力"}。能力仅选 review(综述)、investigation(机制研究)、reproduction(复现)、experimentation(实验)、paper_preparation(论文写作)，可以组合。只有用户明确希望撰写论文才选择 paper_preparation。'
         messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}]
         result, understanding = draft_with_concepts(self, messages, text, previous, editing)
@@ -296,9 +316,12 @@ class WorkspaceApplication:
                     return
                 task_mode = record.get('taskMode', 'research')
                 blockers = copy.deepcopy((record['document'].get('conceptUnderstanding') or {}).get('blockers', []))
+                unresolved = copy.deepcopy((record['document'].get('conceptUnderstanding') or {}).get('unresolved', []))
+                identity_context = '\n'.join(m['content'] for m in record['messages'] if m['role'] == 'user')[-15000:]
             meter = self.settings.usage_context(task_id) if hasattr(self.settings, 'usage_context') else nullcontext()
             scope = self._draft_scope.set({'taskId': task_id, 'token': token, 'revision': revision,
-                                          'origin': 'document_edit' if editing else 'requirements_message', 'blockers': blockers})
+                                          'origin': 'document_edit' if editing else 'requirements_message',
+                                          'blockers': blockers, 'unresolved': unresolved, 'identityContext': identity_context})
             try:
                 with meter:
                     result = self._draft(text, previous, editing, {'report': previous_report, 'taskMode': task_mode})
@@ -342,7 +365,7 @@ class WorkspaceApplication:
                 if self._closed or record['token'] != token or record['document']['revision'] != revision:
                     return
                 record['document'].update(polishing=False, error=self.settings.safe_error(exc))
-                carry_understanding(record['document'], revision, 'needs_clarification' if (record['document'].get('conceptUnderstanding') or {}).get('blockers') else 'failed')
+                carry_understanding(record['document'], revision, 'failed')
                 self._message(record, 'assistant', '需求润色未完成，已保留你的原文。' + self.settings.safe_error(exc), 'requirements')
                 self._save(record)
 
@@ -500,6 +523,8 @@ class WorkspaceApplication:
         return any(any(n['status'] == 'running' for n in app.engine.snapshot()['nodes']) or not app.engine.snapshot()['paused'] for app in self._apps.values())
 
     def post(self, path, payload):
+        if path == '/api/provider/models/deepseek':
+            return self.settings.deepseek_models(payload)
         # Long retrieval runs outside this transaction; its eventual engine commit
         # shares the same lock through ResearchApplication.mutation_lock.
         if path.endswith('/deepen'):
@@ -515,10 +540,6 @@ class WorkspaceApplication:
             with self._lock:
                 if self._settings_busy():
                     raise ValueError('请先暂停研究并等待需求整理结束，再修改模型连接')
-                if path == '/api/setup':
-                    key = payload.get('apiKey', '')
-                    if not isinstance(key, str) or not key.strip():
-                        raise ValueError('请输入 DeepSeek API Key')
                 before = copy.deepcopy(self.settings.data)
                 self._configuring = True
             try:
@@ -532,7 +553,8 @@ class WorkspaceApplication:
                 return dict(self.settings.public(), ok=True, message=message)
             except Exception as exc:
                 message = self.settings.safe_error(exc)
-                self.settings.restore(before)
+                if self.settings.data != before:
+                    self.settings.restore(before)
                 raise ValueError(message) from None
             finally:
                 with self._lock:

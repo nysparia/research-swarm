@@ -46,6 +46,7 @@ def parse_json_object(text: str) -> dict:
 
 
 class Settings:
+    DEEPSEEK_URL = 'https://api.deepseek.com'
     ROLES = ('main', 'judge', 'redteam')
     ROLE_NAMES = {'main': '主研究', 'judge': '证据裁判', 'redteam': '对抗复核'}
     EMPTY_PROVIDER = {'type': 'openai', 'baseUrl': '', 'model': '', 'apiKey': '', 'apiKeyEnv': ''}
@@ -86,6 +87,9 @@ class Settings:
         data.setdefault('reviewPolicy', 'independent')
         if data['reviewPolicy'] not in ('independent', 'shared'):
             raise ValueError('reviewPolicy 必须为 independent 或 shared')
+        data.setdefault('providerRouting', 'per_role')
+        if data['providerRouting'] not in ('shared_main', 'per_role'):
+            raise ValueError('providerRouting 必须为 shared_main 或 per_role')
         # Retain a shared main-slot alias for existing callers and on-disk readers.
         data['provider'] = providers['main']
         data['search'] = normalize_search(data.get('search'))
@@ -127,10 +131,22 @@ class Settings:
 
     def _effective_provider(self, role):
         provider = self.data['providers'][role]
-        if (role != 'main' and self.data['reviewPolicy'] == 'shared'
-                and not provider.get('baseUrl') and not provider.get('model')):
+        if role != 'main' and (self.data['providerRouting'] == 'shared_main' or
+                (self.data['reviewPolicy'] == 'shared' and not provider.get('baseUrl') and not provider.get('model'))):
             return self.data['providers']['main']
         return provider
+
+    def _review_policy(self):
+        return 'shared' if self.data['providerRouting'] == 'shared_main' else self.data['reviewPolicy']
+
+    def _provider_public(self, provider):
+        local = urllib.parse.urlparse(provider.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
+        configured = bool(provider.get('model') and provider.get('baseUrl'))
+        return {k: provider.get(k, '') for k in ('type', 'baseUrl', 'model')} | {
+            'hasKey': bool(self._key(provider)), 'configured': configured,
+            'ready': bool(configured and (local or self._key(provider))),
+            'identity': self._identity(provider), 'local': local,
+        }
 
     def role_status(self, role: str = 'main') -> dict:
         """Describe configured routing; readiness is not a live connectivity check."""
@@ -138,15 +154,10 @@ class Settings:
         with self.lock:
             p = self._effective_provider(role)
             main = self.data['providers']['main']
-            local = urllib.parse.urlparse(p.get('baseUrl', '')).hostname in ('127.0.0.1', 'localhost', '::1')
-            configured = bool(p.get('model') and p.get('baseUrl'))
-            return {k: p.get(k, '') for k in ('type', 'baseUrl', 'model')} | {
-                'hasKey': bool(self._key(p)), 'configured': configured,
-                'ready': bool(configured and (local or self._key(p))),
-                'identity': self._identity(p), 'local': local,
-                'reviewPolicy': self.data['reviewPolicy'],
+            return self._provider_public(p) | {
+                'reviewPolicy': self._review_policy(),
                 'sharedWithMain': role != 'main' and p is main,
-                'independentFromMain': bool(role != 'main' and configured and main.get('model')
+                'independentFromMain': bool(role != 'main' and p.get('model') and p.get('baseUrl') and main.get('model')
                                              and main.get('baseUrl') and self._different_identity(p, main)),
             }
 
@@ -156,7 +167,10 @@ class Settings:
             review_ready = all(providers[role]['ready'] for role in self.ROLES)
             distinct = all(providers[role]['independentFromMain'] for role in ('judge', 'redteam'))
             distinct = distinct and self._different_identity(self.data['providers']['judge'], self.data['providers']['redteam'])
-            return {'mode': self.data['mode'], 'reviewPolicy': self.data['reviewPolicy'], 'provider': copy.deepcopy(providers['main']), 'providers': providers,
+            return {'mode': self.data['mode'], 'reviewPolicy': self._review_policy(),
+                    'providerRouting': self.data['providerRouting'],
+                    'providerConfigurations': {role: self._provider_public(p) for role, p in self.data['providers'].items()},
+                    'provider': copy.deepcopy(providers['main']), 'providers': providers,
                     'search': copy.deepcopy(self.data['search']),
                     'conceptSearch': concept_search.public_settings(self.data['conceptSearch']),
                     'searchProfiles': copy.deepcopy(PROFILES),
@@ -167,7 +181,7 @@ class Settings:
                     'capabilities': {'modelReady': providers['main']['ready'], 'evidenceReady': True,
                                      'roleReady': {role: providers[role]['ready'] for role in self.ROLES},
                                      'independentReviewReady': bool(review_ready and distinct),
-                                     'reviewReady': bool(review_ready and (distinct or self.data['reviewPolicy'] == 'shared')),
+                                     'reviewReady': bool(review_ready and (distinct or self._review_policy() == 'shared')),
                                      'independenceBasis': 'configured_endpoint_and_model',
                                      'independenceNotice': '仅比较已配置的端点和模型名称，不保证不同厂商、模型族或统计独立性。',
                                      'reproductionScope': 'preflight_and_small_experiments',
@@ -207,6 +221,10 @@ class Settings:
             if 'conceptSearch' in payload:
                 raise ValueError('概念搜索由服务端预配置，用户设置不支持修改；请刷新旧界面')
             data = copy.deepcopy(self.data)
+            if 'providerRouting' in payload:
+                if payload['providerRouting'] not in ('shared_main', 'per_role'):
+                    raise ValueError('providerRouting 必须为 shared_main 或 per_role')
+                data['providerRouting'] = payload['providerRouting']
             if 'reviewPolicy' in payload:
                 if payload['reviewPolicy'] not in ('independent', 'shared'):
                     raise ValueError('reviewPolicy 必须为 independent 或 shared')
@@ -267,20 +285,79 @@ class Settings:
             self.data = data
             return self.public()
 
+    @classmethod
+    def _is_deepseek_provider(cls, provider):
+        try:
+            parsed = urllib.parse.urlsplit(provider.get('baseUrl', ''))
+            return (provider.get('type') == 'openai' and parsed.scheme == 'https'
+                    and parsed.hostname == 'api.deepseek.com' and parsed.port in (None, 443)
+                    and parsed.path.rstrip('/') in ('', '/v1')
+                    and not (parsed.username or parsed.password or parsed.query or parsed.fragment))
+        except ValueError:
+            return False
+
+    def _deepseek_key(self, payload):
+        value = payload.get('apiKey', '')
+        if not isinstance(value, str):
+            raise ValueError('DeepSeek API Key 必须为文本')
+        if value.strip():
+            return value.strip()
+        with self.lock:
+            provider = self.data['providers']['main']
+            key = self._key(provider) if self._is_deepseek_provider(provider) else ''
+        if not key:
+            raise ValueError('请输入 DeepSeek 官方 API Key；不能复用自定义端点的密钥')
+        return key
+
+    def _deepseek_models(self, key):
+        request = urllib.request.Request(self.DEEPSEEK_URL + '/models',
+                                         headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json'})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError('官方模型列表超出大小限制')
+            result = json.loads(raw.decode('utf-8'))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise ValueError(f'DeepSeek 官方密钥验证失败（HTTP {exc.code}），请检查 API Key') from None
+            raise ValueError(f'获取 DeepSeek 官方模型失败（HTTP {exc.code}），请稍后重试') from None
+        except (urllib.error.URLError, TimeoutError):
+            raise ValueError('获取 DeepSeek 官方模型失败或超时，请重试') from None
+        except (UnicodeError, json.JSONDecodeError):
+            raise ValueError('DeepSeek 官方模型列表格式无效，请重试') from None
+        entries = result.get('data') if isinstance(result, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError('DeepSeek 官方模型列表格式无效，请重试')
+        ids = list(dict.fromkeys(item['id'].strip() for item in entries
+                               if isinstance(item, dict) and isinstance(item.get('id'), str) and item['id'].strip()))
+        return {'models': [{'id': value} for value in ids]}
+
+    def deepseek_models(self, payload: dict) -> dict:
+        if not isinstance(payload, dict) or set(payload) - {'apiKey'}:
+            raise ValueError('官方模型查询只接受 apiKey；使用 DeepSeek 官方地址')
+        return self._deepseek_models(self._deepseek_key(payload))
+
     def configure_deepseek(self, payload: dict) -> dict:
-        """Explicit opt-in to one-key role separation, preserving the main secret."""
+        """Validate an explicit official model, preserving independent role connections."""
         if not isinstance(payload, dict) or set(payload) - {'apiKey', 'model'}:
             raise ValueError('DeepSeek 设置只接受 apiKey 和 model；使用官方地址')
+        model = payload.get('model')
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError('请从 DeepSeek 官方可用模型列表中选择模型')
+        key = self._deepseek_key(payload)
+        models = self._deepseek_models(key)['models']
+        if not models:
+            raise ValueError('当前 DeepSeek API Key 没有可用模型，请检查账户或稍后重试')
+        if model.strip() not in {item['id'] for item in models}:
+            raise ValueError('所选模型不在当前 Key 的官方可用列表中，请重新获取并选择模型')
         with self.lock:
-            provider = {'type': 'openai', 'baseUrl': 'https://api.deepseek.com'}
-            for field in ('apiKey', 'model'):
-                if field in payload:
-                    if not isinstance(payload[field], str):
-                        raise ValueError('DeepSeek 设置字段必须为文本')
-                    if payload[field].strip():
-                        provider[field] = payload[field].strip()
-            provider.setdefault('model', self.data['providers']['main'].get('model') or 'deepseek-chat')
-            return self.update({'mode': 'llm', 'reviewPolicy': 'shared', 'provider': provider})
+            if self._deepseek_key(payload) != key:
+                raise ValueError('连接设置已变化，请重新获取模型')
+            provider = {'type': 'openai', 'baseUrl': self.DEEPSEEK_URL, 'model': model.strip()}
+            if payload.get('apiKey', '').strip():
+                provider.update(apiKey=key, apiKeyEnv='')
+            return self.update({'mode': 'llm', 'reviewPolicy': 'shared', 'providerRouting': 'per_role', 'provider': provider})
 
     @contextmanager
     def usage_context(self, task_id, node_id=None):

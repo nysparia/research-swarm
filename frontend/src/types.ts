@@ -149,6 +149,7 @@ export interface ProviderSettings {
   configured?: boolean;
   ready?: boolean;
   independentFromMain?: boolean;
+  sharedWithMain?: boolean;
 }
 export interface SearchSettings {
   profile: 'standard' | 'deep';
@@ -184,6 +185,9 @@ export interface Settings {
   mode: 'evidence' | 'llm';
   provider: ProviderSettings;
   providers?: Record<ProviderRole, ProviderSettings>;
+  providerConfigurations?: Record<ProviderRole, ProviderSettings>;
+  providerRouting?: 'shared_main' | 'per_role';
+  reviewPolicy?: 'independent' | 'shared';
   search?: SearchSettings;
   searchProfiles?: Record<'standard' | 'deep', Partial<SearchSettings>>;
   searchKeys?: Record<SearchKeySource, { hasKey: boolean }>;

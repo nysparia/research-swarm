@@ -59,9 +59,12 @@ POST `/proposals/<id>/apply`（草稿也可 `/draft/apply` 加 proposalId）。�
 - GET `/events?after=0&limit=100`：events、nextCursor、more。
 - GET `/events/stream`：SSE，支持 Last-Event-ID 或 after；事件名 research，定期心跳，连接约 25 秒后重连。事件来自实际投影和操作记录，客户端按事件 ID 去重。
 - GET `/usage`：调用数、失败数、服务商实际返回的输入/输出 token 及分角色统计。缺失 usage 单独计数，实际金额保持未知，不伪造价格或账单。
-- POST `/api/settings/deepseek`：`{apiKey?, model?}`，官方地址、复用已存 main Key、显式开启 shared 复核策略。首次界面配置 `/api/setup` 同时验证连接。
+- POST `/api/provider/models/deepseek`：`{apiKey?}` -> `{models:[{id}]}`。固定查询 `https://api.deepseek.com/models`，15 秒超时、响应上限 1 MB；不保存输入密钥、不改变配置、不计入推理用量。只有已保存 main 为官方 OpenAI 兼容端点（根路径或 `/v1`）时允许省略 Key。自定义端点密钥不复用。
+- POST `/api/settings/deepseek`：`{apiKey?, model}`。模型必须显式选择并通过当前 Key 的官方模型列表校验，地址固定为官方；已有独立 judge/redteam 连接保留，空角色采用 shared 复核。`/api/setup` 接受相同字段，另做连接测试；测试失败回滚整个配置，留空复用官方 Key 时也执行相同事务。
+- POST `/api/settings` 支持 `providerRouting: "shared_main" | "per_role"`。shared_main 下三个角色持续使用 main，但保留各角色原配置和原复核策略；per_role 下恢复角色配置和原策略。旧配置默认 per_role。两种模式中密钥更换仍须通过对应 provider 字段提交。
+- GET `/api/settings` 的 `providerConfigurations` 返回各角色保存的脱敏配置，`providers` 返回当前有效连接；`providerRouting` 返回连接模式，`reviewPolicy` 返回当前有效复核策略。前端编辑使用 providerConfigurations，不将继承值保存为独立配置。
 
-shared 策略下未另配置的 judge/redteam 使用 main，提示与上下文隔离，结果标记 `independent=false`、`reviewLevel=same_model`。这不代表独立科学验证。原 independent 策略保留，只有明确单 Key 配置才切换。原始数据、协议、脚本及哈希检查始终保留。
+shared 策略下未另配置的 judge/redteam 使用 main；shared_main 路由下所有复核角色使用 main。共享时提示与上下文隔离，结果标记 `independent=false`、`reviewLevel=same_model`。这不代表独立科学验证。原始数据、协议、脚本及哈希检查始终保留。
 
 ## 实验材料与作业
 

@@ -1,6 +1,6 @@
 # 科研蜂群 · 本地研究编排与证据审阅
 
-Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-research.sh`。打开 [本地科研工作区](http://127.0.0.1:4381)。默认可使用离线的已有材料核验；首次输入一个 DeepSeek 官方 Key 即可配置研究、裁判和红队角色，启用同模型复核。已有独立角色配置保持兼容。
+Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-research.sh`。打开 [本地科研工作区](http://127.0.0.1:4381)。默认可使用离线的已有材料核验；首次输入 DeepSeek 官方 Key、获取可用模型并手动选择后即可使用。官方地址固定，无需填写；已有独立裁判和红队配置保留，未配置的角色共享主模型。
 
 这是研究编排工具，名称中的「蜂群」不代表默认存在异质智能体。一个模型可以承担不同角色，但同模型复核明确标记 `independent=false`，不当作独立验证；原始数据、协议和文件哈希仍由宿主检查。**默认远程端点意味着本地编排 + 云端推理，不是数据不出机。** 单元测试、模型复核和用户签名都不等于科学验证。逐项状态见 [问题整改与验收边界](docs/audit-remediation.md)。
 
@@ -18,7 +18,7 @@ Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-
 
 ## 安装、资料与隐私
 
-[需求概念搜索](docs/concept-search.md)是模型需求撰写阶段的默认能力：只按需理解陌生术语，不搜索整句研究问题，不替代后续论文、Claim 和证据流程。Tavily 凭据由部署方在 config.local.json 的 conceptSearch.apiKey 或启动环境 TAVILY_API_KEY 中提供，用户无需额外开关或密钥。核心研究对象仍不清楚时保存草稿并请求澄清，自动保存不会触发搜索。
+[需求概念搜索](docs/concept-search.md)是模型需求撰写阶段的默认能力：只按需理解陌生术语，不搜索整句研究问题，不替代后续论文、Claim 和证据流程。Tavily 凭据由部署方在 config.local.json 的 conceptSearch.apiKey 或启动环境 TAVILY_API_KEY 中提供，用户无需额外开关或密钥。查询保留发布方上下文，已知发布方先查官方域，资料不足再补第三方线索。明确为「OpenAI 的 dots」等对象后，官方事实未知或搜索失败只保留待核实项，允许开始研究；真正的对象歧义才请求澄清，自动保存不会触发搜索。
 
 随仓库交付 `dist/`，正常使用不需要 Node.js。需要 Python 3.10+；启动脚本在项目 `.venv` 安装依赖。Linux 需要 Bash、Python venv 和 pip，可通过 `RESEARCH_SWARM_PYTHON=/path/to/python3.10 bash start-research.sh` 指定解释器。脚本前台运行，Ctrl+C 停止；`bash start-research.sh --help` 查看参数。前端开发需要 Node.js 20.19+ / 22.12+。
 
@@ -35,6 +35,8 @@ Windows 双击 **start-research.cmd**；Linux 在项目目录运行 `bash start-
 | redteam | 检查当前实验协议、脚本和原始数据 | 保留产物，实验不接收为有效实测 |
 
 旧 `provider` 配置迁移为 main。生产槽保留 DeepSeek 默认值和 `DEEPSEEK_API_KEY` 支持；默认值不保证服务当前可用。原配置默认保持 independent 策略，缺失角色不会静默回退；显式单 Key 配置使用 shared 策略，未单独配置的角色继承 main，记录同源复核。端点与模型标识不同只证明配置可区分，不能证明厂商、模型族或统计独立性；需要自行配置并校准不同来源。
+
+官方弹窗不会沿用高级设置的模型名，必须从当前 Key 的官方可用列表手动选择；自定义端点的密钥也不会自动用于官方连接。高级设置可选择「共享主模型」，只配置一次协议、地址、模型和 Key，裁判与红队持续跟随；原有独立配置保留在本机，切回「分别配置」后恢复。切换在保存后生效，共享复核标记为同模型复核。
 
 设置页提供本机 OpenAI 兼容端点预设（Ollama `http://localhost:11434/v1`）；模型须事先在本机部署并测试连接。仅当所有推理端点均在本机且未执行外部检索、下载或依赖安装时，才是纯本机路径。断网使用已有材料核验时，可保存草稿、核验现存资料、查看缺口；该模式不会自动调用模型或联网补充检索。
 

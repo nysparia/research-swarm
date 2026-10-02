@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { inferenceLocation, isLoopbackEndpoint, modelEnabled, providerFor } from '../src/providerState.ts';
+import { configuredProviderFor, hasSavedDeepSeekKey, inferenceLocation, isLoopbackEndpoint, modelEnabled, providerDraftPayload, providerDraftsFrom, providerFor } from '../src/providerState.ts';
 
 const provider = { type: 'openai', baseUrl: 'https://api.example.test/v1', model: 'test-model', hasKey: true };
 const settings = { mode: 'llm', provider, capabilities: { modelReady: true } };
@@ -31,4 +31,51 @@ test('legacy main configuration never silently populates independent roles', () 
   assert.equal(providerFor(settings, 'main'), provider);
   assert.equal(providerFor(settings, 'judge').model, '');
   assert.equal(providerFor(settings, 'redteam').hasKey, false);
+});
+
+test('only a saved official OpenAI connection offers credential reuse', () => {
+  for (const baseUrl of ['https://api.deepseek.com', 'https://api.deepseek.com/v1/', 'https://api.deepseek.com:443/']) {
+    assert.equal(hasSavedDeepSeekKey({ ...settings, provider: { ...provider, baseUrl } }), true);
+  }
+  for (const baseUrl of ['https://api.example.com/v1', 'https://api.deepseek.com:8443', 'https://api.deepseek.com/proxy', 'https://api.deepseek.com/?key=x', 'https://user@api.deepseek.com', 'invalid']) {
+    assert.equal(hasSavedDeepSeekKey({ ...settings, provider: { ...provider, baseUrl } }), false);
+  }
+  assert.equal(hasSavedDeepSeekKey({ ...settings, provider: { ...provider, baseUrl: 'https://api.deepseek.com', type: 'anthropic' } }), false);
+  assert.equal(hasSavedDeepSeekKey(null), false);
+});
+
+test('advanced drafts edit saved independent connections rather than effective shared ones', () => {
+  const independentJudge = { ...provider, model: 'judge-model', baseUrl: 'https://judge.example.com/v1' };
+  const shared = { ...settings, providerRouting: 'shared_main', providers: { main: provider, judge: { ...provider, sharedWithMain: true }, redteam: { ...provider, sharedWithMain: true } }, providerConfigurations: { main: provider, judge: independentJudge, redteam: { type: 'openai', baseUrl: '', model: '', hasKey: false } } };
+  assert.equal(configuredProviderFor(shared, 'judge'), independentJudge);
+  const drafts = providerDraftsFrom(shared);
+  assert.equal(drafts.judge.model, 'judge-model');
+  assert.equal(drafts.redteam.model, '');
+  drafts.main.apiKey = 'new-key';
+  const payload = providerDraftPayload(shared, drafts, [], 'shared_main');
+  assert.deepEqual(Object.keys(payload), ['main']);
+  assert.equal(payload.main.apiKey, 'new-key');
+  const separate = providerDraftPayload(shared, drafts, [], 'per_role');
+  assert.equal(separate.judge.model, 'judge-model');
+  assert.equal(separate.judge.apiKey, undefined);
+  assert.equal(separate.redteam, undefined);
+});
+
+test('saving inherited roles never materializes a main connection into secondary slots', () => {
+  const inherited = { ...settings, providers: { main: provider, judge: { ...provider, sharedWithMain: true }, redteam: { ...provider, sharedWithMain: true } } };
+  const drafts = providerDraftsFrom(inherited);
+  assert.equal(drafts.judge.baseUrl, '');
+  assert.deepEqual(Object.keys(providerDraftPayload(inherited, drafts, [], 'per_role')), ['main']);
+});
+
+test('endpoint changes clear old keys and independent resets remain scoped to their role', () => {
+  const drafts = providerDraftsFrom(settings);
+  drafts.main.baseUrl = 'https://new.example.com/v1';
+  assert.equal(providerDraftPayload(settings, drafts, [], 'per_role').main.clearKey, true);
+  drafts.main.apiKey = 'new-key';
+  const payload = providerDraftPayload(settings, drafts, ['judge'], 'per_role');
+  assert.equal(payload.main.apiKeyEnv, '');
+  assert.equal(payload.main.clearKey, undefined);
+  assert.equal(payload.judge, null);
+  assert.equal(providerDraftPayload(settings, drafts, ['judge'], 'shared_main').judge, undefined);
 });
