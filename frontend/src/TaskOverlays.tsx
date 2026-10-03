@@ -92,7 +92,7 @@ export function TaskNodeDrawer({ target, detail, onClose, onPaper, accept }: { t
   ] : [];
 
   return <>
-    <Drawer open={Boolean(target)} title="研究节点" size={640} onClose={onClose} rootClassName="task-drawer">
+    <Drawer open={Boolean(target)} title="研究节点" size={640} onClose={onClose} rootClassName="task-drawer sw-drawer">
       {target && state && <>
         {node?.status === 'failed' && <Alert type="error" showIcon title="节点执行失败" description={<BlurText text={failureReason(node)} />} />}
         {node?.kind === 'experiment' && ['missing_input', 'needs_execution'].includes(String(node.output?.structured?.status)) && <Alert type="warning" showIcon title="实验尚未执行" description="当前只有设计或缺失输入说明，没有本机实测结果。" />}
@@ -132,7 +132,7 @@ export function TaskPaperDrawer({ paper, taskId, state, onClose, onPaper }: { pa
       children: <div className="drawer-section"><Markdown text={paper.abstract || '来源未提供摘要。'} /><h3>复现材料</h3><p>{paper.reproducibility || '材料待核对；不代表已经完成复现实验。'}</p></div>,
     },
   ] : [];
-  return <Drawer open={Boolean(paper)} title="论文与证据" size={650} onClose={onClose} rootClassName="task-drawer">{paper && state && <>
+  return <Drawer open={Boolean(paper)} title="论文与证据" size={650} onClose={onClose} rootClassName="task-drawer sw-drawer">{paper && state && <>
     <div className="node-detail-heading"><span>{paper.year || '年份未标注'} · {paper.venue || '来源未标注'} · 论文 #{paper.id}</span><h2>{paper.title}</h2><p>{Array.isArray(paper.authors) ? paper.authors.join('，') : paper.authors}</p></div>
     <div className="paper-source-actions">{paper.pdfAvailable && <Button icon={<DownloadOutlined />} onClick={() => window.open(`/api${taskPath(taskId, `/papers/${encodeURIComponent(paper.id)}/pdf`)}`, '_blank', 'noopener,noreferrer')}>查看全文</Button>}{paper.codeUrl && safeUrl(paper.codeUrl) && <a href={safeUrl(paper.codeUrl)} target="_blank" rel="noreferrer">代码线索 ↗</a>}{paper.doi && <a href={safeUrl(paper.doi) || `https://doi.org/${encodeURIComponent(paper.doi)}`} target="_blank" rel="noreferrer">来源 ↗</a>}</div>
     <Tabs items={tabs} />

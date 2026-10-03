@@ -1,0 +1,71 @@
+{
+  "source": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols",
+  "access": "Public component gallery opened visually; individual controls inspected. Exported assets ZIP contains preview and pointers only, not the full Sketch source.",
+  "materialSubstitution": "CSS frosted glass replaces native Liquid Glass refraction, as requested.",
+  "dimensionsNote": "Heights follow gallery dimensions. Chinese labels expand widths; colors/radii/shadows are visually approximated, not exported exact tokens.",
+  "components": [
+    {
+      "name": "主要按钮",
+      "path": "Buttons / Light / Content Area / Bordered Default / 4 Lg",
+      "query": "Buttons%252FLight%252FContent%2520Area%252FBordered%2520Default%252F4%2520Lg",
+      "dimensions": "66 × 28",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Buttons%252FLight%252FContent%2520Area%252FBordered%2520Default%252F4%2520Lg"
+    },
+    {
+      "name": "输入框与焦点环",
+      "path": "Text Fields / Light / 3 Rg",
+      "query": "Text%2520Fields%252FLight%252F3%2520Rg",
+      "dimensions": "120 × 24（不含焦点环）",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Text%2520Fields%252FLight%252F3%2520Rg"
+    },
+    {
+      "name": "开关",
+      "path": "Toggles - Switches / Light / Content Area / 3 Rg",
+      "query": "Toggles%2520-%2520Switches%252FLight%252FContent%2520Area%252F3%2520Rg",
+      "dimensions": "54 × 24",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Toggles%2520-%2520Switches%252FLight%252FContent%2520Area%252F3%2520Rg"
+    },
+    {
+      "name": "内容区分段控件",
+      "path": "Segmented Controls / Light / Content Area / Duo",
+      "query": "Segmented%2520Controls%252FLight%252FContent%2520Area%252FDuo",
+      "dimensions": "60 × 24（数字示例）",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Segmented%2520Controls%252FLight%252FContent%2520Area%252FDuo"
+    },
+    {
+      "name": "侧栏",
+      "path": "Sidebars / Light / Medium",
+      "dimensions": "240 × 32 行；256 外框",
+      "query": "Sidebars%252FLight%252FMedium",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Sidebars%252FLight%252FMedium"
+    },
+    {
+      "name": "菜单",
+      "path": "Menus / Light / Regular",
+      "dimensions": "160 × 24 行",
+      "query": "Menus%252FLight",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Menus%252FLight"
+    },
+    {
+      "name": "浮动面板",
+      "path": "Popovers / Light",
+      "dimensions": "230 × 230 示意框",
+      "query": "Popovers%252FLight",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Popovers%252FLight"
+    },
+    {
+      "name": "工具栏",
+      "path": "Titlebars and Toolbars / Light / Medium / Buttons",
+      "dimensions": "每格 24 × 24",
+      "query": "Titlebars%2520and%2520Toolbars%252FLight",
+      "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Titlebars%2520and%2520Toolbars%252FLight"
+    }
+  ],
+  "finalLayoutReference": "User-provided desktop chat screenshot: quiet grayscale sidebar, open content area, bottom floating composer. Workflow strip removed.",
+  "finalChromeVariant": {
+    "url": "https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols?g=Segmented%2520Controls%252FLight%252FOver-glass",
+    "variant": "Light / Over-glass / XL",
+    "height": 36,
+    "note": "Content fields stay regular; navigation rows are adapted to the supplied page reference."
+  }
+}

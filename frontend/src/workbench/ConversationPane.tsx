@@ -10,6 +10,7 @@ export function ConversationPane({ detail, composer, onProposal, onRetry, onDeci
   detail: TaskDetail; composer: ReactNode; onProposal: (value: ProposalReview) => void;
   onRetry: (value: Interaction) => void; onDecision: (value: { decisionId: string; expectedRevision: number; optionIndex: number }) => void; sending?: boolean;
 }) {
+  const pane = useRef<HTMLElement>(null); const dock = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null); const contents = useRef<HTMLDivElement>(null); const following = useRef(true);
   const [atEnd, setAtEnd] = useState(true); const [copied, setCopied] = useState('');
   const messages = detail.messages; const decision = detail.state?.project.researchDecision;
@@ -21,12 +22,22 @@ export function ConversationPane({ detail, composer, onProposal, onRetry, onDeci
     const observer = new ResizeObserver(() => { if (following.current) jump(); });
     if (contents.current) observer.observe(contents.current); return () => observer.disconnect();
   }, []);
+  useLayoutEffect(() => {
+    const element = dock.current; if (!element) return;
+    const measure = () => {
+      pane.current?.style.setProperty('--sw-dock-height', `${Math.ceil(element.getBoundingClientRect().height)}px`);
+      if (following.current) jump();
+    };
+    measure(); const observer = new ResizeObserver(measure); observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const visibleInteractions = (detail.interactions || []).filter(item => item.showInConversation);
   const copy = async (id: string, text: string) => { try { await navigator.clipboard.writeText(text); setCopied(id); window.setTimeout(() => setCopied(current => current === id ? '' : current), 1600); } catch { setCopied(''); } };
-  return <section className="sw-dialogue" aria-label="研究对话">
+  return <section ref={pane} className="sw-dialogue" aria-label="研究对话"><header className="sw-dialogue-header"><span><Icon name="chat" />研究对话</span><span>随时补充你的想法</span></header>
     <div ref={scroller} className="sw-dialogue-scroll" onScroll={() => { const el = scroller.current; if (!el) return; const close = isNearConversationEnd(el.scrollTop, el.scrollHeight, el.clientHeight); following.current = close; setAtEnd(close); }}>
       <div ref={contents} className="sw-dialogue-messages">
         {messages.map(message => { const interaction = visibleInteractions.find(item => item.id === message.interactionId); return <article className={`sw-message sw-message-${message.role}`} key={message.id} aria-label={message.role === 'user' ? '你的消息' : message.role === 'assistant' ? '研究助手' : '研究状态'}>
+          {message.role === 'assistant' && <div className="sw-assistant-label"><Icon name="layers" /><span>研究助手</span></div>}
           {message.context && <div className="sw-message-context"><Icon name="link" /><span>{message.context.nodeTitle || message.context.artifactTitle || '研究记录'}</span><span>v{message.context.artifactRevision}{interaction?.stale || detail.workbench?.artifacts.some(a => a.id === message.context!.artifactId && a.revision !== message.context!.artifactRevision) ? ' · 历史版本' : ''}</span></div>}
           {['queued', 'running'].includes(message.status || '') ? <div className="sw-dialogue-pending" role="status"><span className="sw-thinking-dot" />{message.status === 'queued' ? '等待上一条回复' : '正在结合研究记录回复'}</div> : <Markdown text={message.content} />}
           {message.role === 'assistant' && message.content && <div className="sw-message-tools"><Button icon={copied === message.id ? 'check' : 'copy'} aria-label={copied === message.id ? '已复制' : '复制回复'} title={copied === message.id ? '已复制' : '复制回复'} onClick={() => { void copy(message.id, message.content); }} /></div>}
@@ -39,6 +50,6 @@ export function ConversationPane({ detail, composer, onProposal, onRetry, onDeci
     </div>
     {!atEnd && <Button className="sw-return-latest" icon="send" aria-label="回到最新消息" title="回到最新消息" onClick={jump} />}
     {decision && detail.state && <div className="sw-research-choice"><strong>{decision.question}</strong><div>{decision.options.map((option, index) => <Button key={option.label} variant="outline" title={option.effect} disabled={sending} onClick={() => onDecision({ decisionId: decision.id, expectedRevision: detail.state!.revision, optionIndex: index })}>{option.label}</Button>)}</div></div>}
-    <div className="sw-dialogue-compose">{composer}</div>
+    <div ref={dock} className="sw-dialogue-compose">{composer}</div>
   </section>;
 }
