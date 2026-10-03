@@ -9,6 +9,8 @@ import { chartSeries, protocolStrings } from './boardState';
 import { plain, record, statusLabels } from './state';
 import { buildAgentStructure, initialStructureView, layoutAgents, type AgentCardData, type AgentEdge, type AgentPosition, type AgentStructureData, type StructureView } from './agentStructureState';
 import './agentStructure.css';
+import { nodeExecutionLabel } from './executionState';
+import { ModelWaitNotice } from './ModelWaitNotice';
 
 export interface AgentStructureProps {
   detail: TaskDetail;
@@ -42,11 +44,12 @@ function NodeBody({ data, detail, inspect, adjust }: { data: AgentCardData; deta
   const structured = record(outputArtifact?.content.structured), demand = record(structured.dataDemand || node.input.dataDemand);
   const metric = plain(demand.metric), latest = node.logs.at(-1)?.message || '';
   const subject = metric || claim?.statement || node.title;
+  if (node.status === 'running' && node.modelWait) return <><p className="sa-node-subject">{subject}</p><ModelWaitNotice wait={node.modelWait} compact /></>;
   if (problem) return <div className="sa-node-problem"><strong><Icon name="lab" />执行问题</strong><p title={problem}>{problem}</p><button onClick={inspect}>查看原因与日志 <Icon name="arrow" /></button></div>;
   if (node.id === 'central' || !node.parentId && step === 'synthesis') {
     const claims = detail.state?.claimGraph?.claims.filter(item => !item.archived) || [];
     const active = detail.state?.nodes.filter(item => item.active && !item.input.superseded) || [];
-    return <><p className="sa-node-subject" title={detail.task.title}>{detail.task.title}</p><div className="sa-counts"><div><strong>{claims.length}</strong><span>主张</span></div><div><strong>{active.filter(item => item.status === 'running').length}</strong><span>运行中</span></div><div><strong>{active.length}</strong><span>节点</span></div></div></>;
+    return <><p className="sa-node-subject" title={detail.task.title}>{detail.task.title}</p><div className="sa-counts"><div><strong>{claims.length}</strong><span>主张</span></div><div><strong>{detail.state?.executionSummary?.running ?? active.filter(item => item.status === 'running' && !item.modelWait).length}</strong><span>运行中</span></div><div><strong>{active.length}</strong><span>节点</span></div></div></>;
   }
   if (claim) return <><p className="sa-node-subject" title={claim.statement}>{claim.statement}</p><button className="sa-assessment" onClick={inspect}><span className={`sa-assessment-dot is-${claim.assessment.status}`} />{statusLabels[claim.assessment.status] || claim.assessment.status}<Icon name="chevron" /></button><div className="sa-evidence-counts" aria-label="当前主张版本的证据关联"><span title="正向支持关系">正向 {relationCounts.for}</span><span title="反向支持关系">反向 {relationCounts.against}</span><span title={`细化关系 ${relationCounts.qualify}；混合或未定关系 ${relationCounts.mixed}`}>细化 {relationCounts.qualify}</span></div></>;
   if (step === 'experiment_design' || Object.keys(protocol).length && step !== 'experiment_execution' && node.kind !== 'experiment') {
@@ -78,8 +81,11 @@ function NodeBody({ data, detail, inspect, adjust }: { data: AgentCardData; deta
     return <><div className="sa-source-row"><Icon name="book" /><span>问题背景</span><strong>{plain(background.context) ? '已整理' : '待展开'}</strong></div><div className="sa-source-row"><Icon name="target" /><span>研究边界</span><strong>{plain(background.boundaries) ? '已整理' : '待明确'}</strong></div><div className="sa-source-row"><Icon name="layers" /><span>相关领域</span><strong>{fields.length}</strong></div><button className="sa-inline-action" onClick={inspect}>查看边界 <Icon name="arrow" /></button></>;
   }
   if (step === 'topic') {
-    const topic = record(structured.researchTopic);
-    return <><p className="sa-node-subject" title={plain(topic.question) || node.title}>{plain(topic.title) || '正在凝练课题'}</p><div className="sa-source-row"><Icon name="link" /><span>关联证据</span><strong>{evidence.length}</strong></div><div className="sa-source-row"><Icon name="layers" /><span>候选下一步</span><strong>{protocolStrings(structured.nextResearch).length}</strong></div><button className="sa-inline-action" onClick={inspect}>查看课题 <Icon name="arrow" /></button></>;
+    const cycle = detail.state?.project.researchCycle;
+    const selection = cycle?.topicSelection;
+    const topic = record(selection?.selectedTopic || structured.selectedTopic || structured.researchTopic);
+    const candidates = cycle?.topicCandidates || [];
+    return <><p className="sa-node-subject" title={plain(topic.question) || node.title}>{selection?.status === 'pending' ? '候选课题已整理，等待你选择' : plain(topic.title) || '正在凝练课题'}</p><div className="sa-source-row"><Icon name="link" /><span>关联证据</span><strong>{evidence.length}</strong></div><div className="sa-source-row"><Icon name="layers" /><span>候选课题</span><strong>{candidates.length}</strong></div><button className="sa-inline-action" onClick={inspect}>查看课题 <Icon name="arrow" /></button></>;
   }
   const summary = brief(outputArtifact?.content.summary) || brief(node.input.description);
   return <><p className="sa-node-excerpt is-large" title={summary || node.title}>{summary || node.title}</p><div className="sa-node-records"><span><Icon name="link" />{evidence.length} 条证据</span>{outputArtifact ? <button onClick={inspect}>查看产出 <Icon name="arrow" /></button> : <span>{node.status === 'running' ? '正在处理' : '待产出'}</span>}</div></>;
@@ -160,7 +166,7 @@ function StructureCanvas({ detail, onNode, onInspect, onDiscuss, data }: AgentSt
           const { node } = item, inspect = () => { setSelected(node.id); if (item.jobArtifact) onInspect(item.jobArtifact); else if (item.claimArtifact && !item.problem) onInspect(item.claimArtifact); else onNode(visualNode(node)); };
           const discuss = () => { setSelected(node.id); onDiscuss(node, item.discussionArtifact); };
           return <article key={node.id} className={`sa-agent-card ${selected === node.id ? 'is-selected' : ''} ${item.problem ? 'has-problem' : ''}`} style={{ left: position.x, top: position.y, width: position.width, height: position.height }} data-agent-id={node.id} data-agent-step={item.step} data-agent-status={node.status} aria-label={node.title} onFocusCapture={() => { const left = position.x * view.scale + view.x, top = position.y * view.scale + view.y; if (left < 0 || top < 0 || left + position.width * view.scale > size.width || top + position.height * view.scale > size.height) focus(node.id); }}>
-            <header><button className="sa-agent-heading" title={node.title} onClick={() => { setSelected(node.id); onNode(visualNode(node)); }}><Avatar index={index} small /><span>{stepNames[item.step] || node.role.replace(/\s*agent$/i, '') || node.title}</span></button><span className={`sa-status is-${node.status}`} title={statusLabels[node.status]} aria-label={statusLabels[node.status]}>{node.status === 'completed' ? <Icon name="check" /> : node.status === 'failed' || item.problem ? <span>!</span> : <i />}</span></header>
+            <header><button className="sa-agent-heading" title={node.title} onClick={() => { setSelected(node.id); onNode(visualNode(node)); }}><Avatar index={index} small /><span>{stepNames[item.step] || node.role.replace(/\s*agent$/i, '') || node.title}</span></button><span className={`sa-status is-${node.status}`} title={nodeExecutionLabel(node) || statusLabels[node.status]} aria-label={nodeExecutionLabel(node) || statusLabels[node.status]}>{node.status === 'completed' ? <Icon name="check" /> : node.status === 'failed' || item.problem ? <span>!</span> : <i />}</span></header>
             <div className="sa-agent-body"><NodeBody data={item} detail={detail} inspect={inspect} adjust={discuss} /></div>
             <footer><button onClick={discuss} aria-label={`从这里深入：${node.title}`}>从这里深入 <Icon name="arrow" /></button></footer>
           </article>;

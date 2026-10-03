@@ -78,6 +78,9 @@ class Engine:
             self._state["paused"] = True
             self._manual_paused = not (self._state["report"]["approved"] or self._state["report"].get("ready"))
             for node in self._state["nodes"]:
+                if (node.get('modelWait') or {}).get('nextRetryAt'):
+                    node['retryNotBefore'] = node['modelWait']['nextRetryAt']
+                node.pop('modelWait', None)
                 if node["status"] == "running":
                     node["status"] = "pending"
                     node["progress"] = 0
@@ -241,6 +244,8 @@ class Engine:
                 "refresh-library": self._refresh_library,
                 "start-autonomous": self._start_autonomous,
                 "research-choice": self._research_choice,
+                "topic-selection": self._topic_selection,
+                "topic-refresh": self._topic_refresh,
                 "paper-context": self._paper_context,
                 "claim-decision": self._claim_decision,
                 "revise-requirements": self._revise_requirements,
@@ -357,13 +362,17 @@ class Engine:
                                       "round": self._state["project"]["round"], **details})
 
     def _refresh_status(self):
+        from .topic_selection import pending
         state = self._state
-        if state["activeCheckpointId"]:
+        from .execution_status import summarize
+        summary = summarize(state, self._node_ready)
+        state['executionSummary'] = summary
+        if state["activeCheckpointId"] or pending(state['project']):
             state["status"] = "waiting_user"
             state["paused"] = True
         elif state["report"]["approved"] or state["report"].get("ready"):
             state["status"] = "completed"
-        elif any(node["active"] and node["status"] == "failed" for node in state["nodes"]):
+        elif summary['failed'] and not (summary['running'] or summary['waitingProvider'] or summary['ready']):
             state["status"] = "failed"
         elif state["paused"]:
             state["status"] = "idle"
@@ -479,6 +488,8 @@ class Engine:
         self._stop_running("开始自主研究")
         self._state["project"].update(workflow="autonomous", mode=mode, researchStarted=True, researchIteration=1)
         self._state['project']['taskMode'] = task_mode
+        self._state['project']['topicMode'] = payload.get('topicMode') if payload.get('topicMode') in ('explore', 'direct', 'delegate') else 'explore'
+        self._state['project']['topicIntent'] = copy.deepcopy(payload.get('topicIntent') or {})
         self._state['project']['paperResearch'] = bool(payload.get('paperResearch'))
         self._state['project']['paperContext'] = copy.deepcopy(payload.get('paperContext') or {})
         if payload.get('budgetTier') is not None:
@@ -595,6 +606,9 @@ class Engine:
     def _stop_running(self, cause):
         self._epoch += 1
         for node in self._state["nodes"]:
+            if (node.get('modelWait') or {}).get('nextRetryAt'):
+                node['retryNotBefore'] = node['modelWait']['nextRetryAt']
+            node.pop('modelWait', None)
             if node["status"] == "running":
                 token = self._executions.get(node["id"])
                 if token:
@@ -613,6 +627,9 @@ class Engine:
         self._activity("user", "已暂停任务派发；未完成执行的迟到结果将被废弃。")
 
     def _resume(self, payload):
+        from .topic_selection import pending
+        if pending(self._state['project']):
+            raise ValueError('请先选择或自定义研究课题，继续按钮不能代替选题')
         if self._state['project'].get('researchDecision'):
             raise ValueError('当前有研究决策等待你选择，继续按钮不能代替你的判断')
         self._manual_paused = False
@@ -630,6 +647,11 @@ class Engine:
 
     def _paper_context(self, payload):
         self._state['project']['paperContext'] = copy.deepcopy(payload.get('paperContext') or {})
+        if payload.get('supersedeDecision'):
+            cycle = self._state['project'].get('researchCycle') or {}
+            if (cycle.get('topicSelection') or {}).get('status') == 'pending':
+                self._history('topic-selection-superseded', selection=copy.deepcopy(cycle['topicSelection']))
+                cycle.update(topicSelection=None, topicCandidates=[], topic=None)
         if payload.get('supersedeDecision') and self._state['project'].get('researchDecision'):
             self._history('research-decision-superseded', decision=copy.deepcopy(self._state['project']['researchDecision']), reason='用户重新编辑了研究需求')
             self._state['project']['researchDecision'] = None
@@ -662,6 +684,26 @@ class Engine:
         self._state['project'].setdefault('researchChoices', []).append(choice)
         self._state['project']['researchDecision'] = None
         self._history('research-choice', **choice)
+        self._resume({})
+
+    def _topic_selection(self, payload):
+        from .topic_selection import select
+        select(self, payload)
+
+    def _topic_refresh(self, payload):
+        from .topic_selection import pending
+        if not pending(self._state['project']):
+            raise ValueError('当前没有待调整的候选课题')
+        cycle = self._state['project']['researchCycle']
+        node = self._get_node(cycle['topicSelection']['nodeId'])
+        previous = copy.deepcopy(cycle['topicCandidates'])
+        feedback = payload.get('text')
+        if not isinstance(feedback, str) or not 1 <= len(feedback.strip()) <= 8000:
+            raise ValueError('请说明候选课题需要怎样调整')
+        self._intervene({'nodeId': node['id'], 'kind': 'modify', 'expectedRevision': payload.get('expectedRevision'),
+                         'text': '请根据已有文献重新提出候选课题。用户反馈：' + feedback})
+        node['input']['previousTopicCandidates'] = previous
+        cycle.update(status='running', stage='topic')
         self._resume({})
 
     def _kind(self, kind):
@@ -719,6 +761,11 @@ class Engine:
         return "central"
 
     def _invalidate(self, node_ids, cause, *, supersede_decision=False):
+        cycle = self._state['project'].get('researchCycle') or {}
+        selection = cycle.get('topicSelection') or {}
+        if supersede_decision and selection.get('nodeId') in node_ids:
+            self._history('topic-selection-superseded', selection=copy.deepcopy(selection), reason=cause)
+            cycle.update(topicCandidates=[], topicSelection=None, topic=None)
         from .claim_runtime import invalidate_claims
         invalidate_claims(self._state, set(node_ids), cause)
         decision = self._state['project'].get('researchDecision')
@@ -732,6 +779,8 @@ class Engine:
             if node['input'].get('superseded'): continue
             node["version"] += 1
             node["status"] = "pending"
+            node.pop('modelWait', None)
+            node['error'] = None
             node["progress"] = 0
             node["output"] = None
             node["evidenceIds"] = []
@@ -950,11 +999,19 @@ class Engine:
         self._history("paper-feedback", paperId=paper["id"], value=value)
 
     def _retry(self, payload):
+        from .topic_selection import pending
         node = self._get_node(payload.get("nodeId"))
+        if 'expectedNodeVersion' in payload and (type(payload['expectedNodeVersion']) is not int or payload['expectedNodeVersion'] != node['version']):
+            raise ValueError('节点版本已变化，请查看最新状态后重试')
         if node["status"] != "failed":
             raise ValueError("只有失败节点可以重试")
+        retry_phase = (node.get('error') or {}).get('phase', node['phase'])
+        if (node.get('error') or {}).get('nextRetryAt'):
+            node['retryNotBefore'] = node['error']['nextRetryAt']
         self._invalidate([node["id"]], "用户重试失败任务")
-        if not self._pending_checkpoint() and not self._state['project'].get('researchDecision'):
+        # An aggregate reviewer must reuse completed children, not re-run their experiments.
+        node['phase'] = retry_phase
+        if not self._pending_checkpoint() and not self._state['project'].get('researchDecision') and not pending(self._state['project']):
             self._state["paused"] = False
             self._manual_paused = False
         self._activity("user", "已安排失败任务重试。", node)
@@ -1140,7 +1197,21 @@ class Engine:
                 self._add_children(node, nested)
                 node["phase"] = "aggregate"
 
+    def _node_ready(self, node):
+        if not node['active'] or node['status'] != 'pending' or node['input'].get('superseded'):
+            return False
+        cycle = self._state['project'].get('researchCycle')
+        if (cycle and self._state['project'].get('taskMode') != 'reproduction'
+                and node['input'].get('researchStep') not in ('background', 'literature', 'topic')
+                and (cycle.get('topicSelection') or {}).get('status') != 'selected'):
+            return False
+        return (all(self._get_node(i)['status'] == 'completed' for i in node['input'].get('dependsOn', []))
+                and all(child['status'] == 'completed' for child in self._children(node['id'])))
+
     def _next_job(self):
+        from .topic_selection import pending
+        if pending(self._state['project']):
+            return None
         if (self._state["paused"] or self._pending_checkpoint() or self._state['project'].get('researchDecision') or self._state["report"]["approved"]
                 or self._state["report"].get("ready")
                 or (self._autonomous() and not self._state["project"].get("researchStarted"))):
@@ -1148,11 +1219,9 @@ class Engine:
         if len(self._executions) >= self._limit('maxParallel'):
             return None
         for node in self._state["nodes"]:
-            if not node["active"] or node["status"] != "pending":
+            if not self._node_ready(node):
                 continue
             dependencies = node['input'].get('dependsOn', [])
-            if any(self._get_node(i)['status'] != 'completed' for i in dependencies):
-                continue
             remaining_depth = max(0, self._limit('maxDepth') - self._depth(node))
             remaining_tasks = max(0, self._limit('maxTasks') - sum(n['active'] for n in self._state['nodes']))
             children = self._children(node["id"])
@@ -1182,6 +1251,7 @@ class Engine:
             node["startedAt"] = _now()
             node["finishedAt"] = None
             node['error'] = None
+            node.pop('modelWait', None)
             token = {"id": _id("run"), "epoch": self._epoch, "version": node["version"],
                      "started": time.monotonic(), "nodeId": node["id"], "phase": node["phase"]}
             self._executions[node["id"]] = token
@@ -1208,6 +1278,7 @@ class Engine:
             context['paperContext'] = copy.deepcopy(self._state['project'].get('paperContext', {}))
             context['researchChoices'] = copy.deepcopy(self._state['project'].get('researchChoices', []))
             context['researchCycle'] = copy.deepcopy(self._state['project'].get('researchCycle'))
+            context['modelNotBefore'] = node.get('retryNotBefore')
             context['taskMode'] = self._state['project'].get('taskMode', 'research')
             context['claimGraph'] = copy.deepcopy(self._state['claimGraph'])
             context['evidenceApprovals'] = copy.deepcopy(self._state['project'].get('researchEvidenceApprovals', {}))
@@ -1347,6 +1418,7 @@ class Engine:
                 if self._runner is None:
                     raise ValueError("尚未配置研究执行器，无法执行任务；请配置后重试")
                 context['cancelled'] = lambda token=token: not self._current(token)
+                context['model_wait'] = lambda value, token=token: self._model_wait(token, value)
                 context['executionToken'] = token['id']
                 context['record_diagnostic'] = lambda result, token=token: self._record_diagnostic(token, result)
                 context['record_execution'] = lambda result, token=token: self._record_execution(token, result)
@@ -1375,9 +1447,13 @@ class Engine:
                 with self._condition:
                     if self._current(token):
                         current = self._get_node(token["nodeId"])
+                        current.pop('modelWait', None)
                         current.update(status="failed", finishedAt=_now(), progress=0)
                         current['error'] = {'code': type(error).__name__, 'message': str(error),
                                             'at': _now(), 'phase': token['phase'], 'retryable': True}
+                        from .providers import ModelConnectionError
+                        if isinstance(error, ModelConnectionError):
+                            current['error'].update(error.details())
                         current["elapsedMs"] += max(0, int((time.monotonic() - token["started"]) * 1000))
                         self._executions.pop(current["id"], None)
                         self._activity("system", "任务失败：" + str(error), current, "error")
@@ -1390,6 +1466,20 @@ class Engine:
                         report_failure(self, current, token, error)
                         self._commit()
                         self._condition.notify_all()
+
+    def _model_wait(self, token, value):
+        with self._condition:
+            if not self._current(token):
+                return
+            node = self._get_node(token['nodeId'])
+            if node.get('modelWait') == value:
+                return
+            if value is None:
+                node.pop('modelWait', None)
+            else:
+                node['modelWait'] = copy.deepcopy(value)
+            self._history('model-wait', nodeId=node['id'], version=node['version'], executionToken=token['id'], wait=copy.deepcopy(value))
+            self._commit()
 
     def _validated_output(self, node, output):
         if not isinstance(output, dict):
@@ -1487,7 +1577,7 @@ class Engine:
         json.dumps(result, allow_nan=False)
         if self._state['project'].get('researchCycle') and node['input'].get('researchStep'):
             from .research_cycle import validate_output
-            validate_output(node['input']['researchStep'], node['phase'], result['structured'], known, node['input'].get('hypothesisId'))
+            validate_output(node['input']['researchStep'], node['phase'], result['structured'], known, node['input'].get('hypothesisId'), node['input'].get('topicMode', 'explore'))
             if self._state['project'].get('taskMode') == 'reproduction':
                 from .claim_runtime import validate_reproduction
                 validate_reproduction(result['structured'].get('hypotheses', []), self._state['evidence'])
@@ -1495,15 +1585,13 @@ class Engine:
                 raise ValueError('研究论断必须带来源；未验证的想法放在猜想或未决项中')
             if result.get('children') or result.get('followups'):
                 raise ValueError('研究阶段任务由证据循环调度，不得跳过数据索求或实验复核环节')
-            if node['input']['researchStep'] == 'topic' and self._state['project'].get('paperResearch') and not result['structured'].get('researchDecision'):
+            if (node['input']['researchStep'] == 'topic' and self._state['project'].get('paperResearch')
+                    and self._state['project'].get('taskMode') == 'reproduction'
+                    and not result['structured'].get('researchDecision')):
                 topic = result['structured']['researchTopic']
                 options = [
-                    {'label': '先验证现有方案与边界', 'effect': '围绕现有方法、强基线和适用条件提出可证伪猜想。'},
-                    {'label': '优先探索新的方法机制', 'effect': '围绕研究缺口提出候选新机制，与现有方法进行可证伪比较。'}]
-                if self._state['project'].get('taskMode') == 'reproduction':
-                    options = [
-                        {'label': '优先严格复现原设置', 'effect': '保留论文指标、数据划分与实验设置；资源不满足时明确报告缺口。'},
-                        {'label': '允许按本机资源缩小规模', 'effect': '记录对原设置的全部偏离，有限规模结果不等同原实验复现。'}]
+                    {'label': '优先严格复现原设置', 'effect': '保留论文指标、数据划分与实验设置；资源不满足时明确报告缺口。'},
+                    {'label': '允许按本机资源缩小规模', 'effect': '记录对原设置的全部偏离，有限规模结果不等同原实验复现。'}]
                 result['structured']['researchDecision'] = {'question': '课题「' + topic['title'] + '」先侧重哪一点？',
                     'rationale': topic['rationale'], 'options': options}
         return result

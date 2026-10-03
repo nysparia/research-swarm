@@ -14,7 +14,7 @@ export interface ConceptUnderstanding {
   resolved?: { term: string; status: string; definition?: string; source?: string; sourceIds?: string[]; quote?: string; identityStatus?: 'confirmed' | 'ambiguous'; identityQuote?: string }[];
 }
 export interface ResearchDocument { markdown: string; revision: number; polishing: boolean; polishedFrom?: number | null; source: 'model' | 'local'; questions: string[]; error: string | null; conceptUnderstanding?: ConceptUnderstanding }
-export interface Message { id: string; role: 'user' | 'assistant' | 'system'; content: string; at: string; kind?: 'requirements' | 'progress' | 'result'; interactionId?: string; status?: string; context?: { scope?: 'overview' | 'node'; nodeId?: string; nodeTitle?: string; artifactId: string; artifactRevision: number; artifactTitle?: string } }
+export interface Message { id: string; role: 'user' | 'assistant' | 'system'; content: string; at: string; kind?: 'requirements' | 'progress' | 'result'; interactionId?: string; topicSelectionId?: string; status?: string; context?: { scope?: 'overview' | 'node'; nodeId?: string; nodeTitle?: string; artifactId: string; artifactRevision: number; artifactTitle?: string } }
 export interface RunSummary { round: number; at: string; summary: string; mode: string }
 export interface TaskDetail {
   task: TaskSummary;

@@ -80,7 +80,7 @@ class WorkspaceRaceTests(unittest.TestCase):
         return thread, outcome
 
     def new_document(self):
-        self.workspace.post(self.prefix + "/messages", {"text": "NEW completely different question"})
+        self.workspace.post(self.prefix + "/messages", {"text": "修改需求：NEW completely different question"})
         wait_until(lambda: not self.workspace.detail(self.task_id)["document"]["polishing"])
         detail = self.workspace.detail(self.task_id)
         self.assertEqual(detail["phase"], "requirements")
@@ -143,7 +143,7 @@ class WorkspaceRaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.detail(self.task_id)["phase"], "requirements")
         self.assertTrue(app.engine.snapshot()["paused"])
 
-    def test_edit_in_failed_phase_invalidates_sibling_still_running(self):
+    def test_edit_in_partial_failure_invalidates_sibling_still_running(self):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         def runner(node, context, log):
@@ -159,7 +159,8 @@ class WorkspaceRaceTests(unittest.TestCase):
             return {"summary": "Late obsolete result", "evidenceIds": [], "claims": [], "structured": {}}
         app = self.attach_engine(runner)
         self.assertTrue(entered.wait(2))
-        wait_until(lambda: self.workspace.detail(self.task_id)["phase"] == "failed")
+        wait_until(lambda: self.workspace.detail(self.task_id)['state']['executionSummary']['status'] == 'partially_blocked')
+        self.assertEqual(self.workspace.detail(self.task_id)['phase'], 'researching')
         sibling = next(n for n in app.engine.snapshot()["nodes"] if n["title"] == "late sibling")
         self.assertEqual(sibling["status"], "running")
         self.new_document()

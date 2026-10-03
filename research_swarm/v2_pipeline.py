@@ -46,16 +46,29 @@ class MeteredSettings:
         return getattr(self.settings, key)
 
     def chat(self, *args, **kwargs):
-        self.store.charge(self.node, 'modelCalls')
         notify = kwargs.pop('on_retry', None)
+        scoped = hasattr(self.settings, 'request_context')
+        if not scoped:
+            self.store.charge(self.node, 'modelCalls')
 
         def retry(message):
             # Settings invokes this before its transport/format retry, not after it.
-            self.store.charge(self.node, 'modelCalls')
+            if not scoped:
+                self.store.charge(self.node, 'modelCalls')
             if notify:
                 notify(message)
 
         try:
+            if scoped:
+                def cancelled():
+                    try:
+                        with self.store.connect() as db:
+                            self.store.guard(db, self.node)
+                    except DomainError:
+                        return True
+                    return False
+                with self.settings.request_context(cancelled=cancelled, on_request=lambda: self.store.charge(self.node, 'modelCalls')):
+                    return self.settings.chat(*args, on_retry=retry, **kwargs)
             return self.settings.chat(*args, on_retry=retry, **kwargs)
         except Exception as exc:
             from .providers import ModelAuthenticationError
@@ -353,6 +366,9 @@ class Pipeline:
         except DomainError:
             raise
         except Exception as exc:
+            from .providers import ModelConnectionError, ModelRequestCancelled
+            if isinstance(exc, (ModelConnectionError, ModelRequestCancelled)):
+                raise
             return '红队复核未完成：' + self.settings.safe_error(exc)
         for evidence_id in verified_ids:
             approvals[evidence_id] = {

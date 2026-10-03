@@ -41,6 +41,23 @@ v2 当前并行节点上限为 1；多个阶段/审阅角色不代表默认使�
 
 ## 模型输出协议与诊断
 
+模型临时传输错误使用结构化 `statusCode/retryAfterSeconds/retryExhausted/nextRetryAt`。408、429、500、502、503、504 及网络超时最多重试三次，默认 5/15/45 秒并附不超过 20% 抖动；遵守 `Retry-After`，累计等待最多 300 秒。JSON 格式纠错仍独立限制一次，同一模型请求含两类恢复最多五次 HTTP 调用。401/403 和参数错误不自动重试。
+
+同一 Settings 中，相同地址与凭据共享接口冷却；429/503 后串行探测，连续两次成功才恢复原并发。等待可取消，暂停或关闭服务后不继续请求；传输重试保留本节点已有工具结果，裁判/红队服务不可用不会转换成科学判定或实验重跑。v2 的模型预算在实际请求前逐次扣除。
+
+节点 `modelWait` 包含 `reason/retryNumber/maxRetries/nextRetryAt/statusCode/kind`（cooldown/probe）；`executionSummary` 包含 `status/running/waitingProvider/failed/blocked/ready/completed`。等待不计入推理运行数；有独立工作时为 partially_blocked，无剩余可执行工作时为 blocked。前端自行计算倒计时，服务器只持久化状态转换。工作区在 researching 和 failed 阶段持续同步，错误消息按节点版本去重。
+
+`POST /actions/retry` 接受 `{nodeId,expectedNodeVersion}`；版本可选以兼容旧调用，新界面总是提交。拒绝过期或重复重试，仅重试该节点及其原执行阶段；聚合复核复用已完成子实验。服务重启后仍等待显式恢复，旧等待状态不自动启动请求；恢复时遵守已保存的最早重试时间。
+
+当前默认工作台新启动的普通研究增加候选选题协议；不迁移历史任务，不改变 `conversation_only_v2`。需求编译保存 `topicMode: explore|direct|delegate` 与逐字引用用户指令的 `topicIntent`，无有效依据时采用 explore。
+
+- `project.researchCycle.topicCandidates`：3–5 个候选，每项包含 `id/title/question/researchGap/rationale/evidenceIds/minimalStudy/feasibility/limitations`。标题、问题和 ID 不可重复，引用必须是非空实际证据；语义差异由提示词约束，格式校验不能证明研究新颖性。
+- `project.researchCycle.topicSelection`：`id/nodeId/status` 与确定后的 `mode/selectedTopic/sourceCandidateIds/actor/at`；候选单选保存 `candidateId`，自定义与编辑保存原始 `customText`，编辑另存 `baseCandidateId`。`cycle.topic` 只在确定后提供给后续研究。
+- `POST /topic-selection`：`{expectedRevision,mode:'candidate',candidateId}`、`{expectedRevision,mode:'custom',customText}` 或 `{expectedRevision,mode:'edited',baseCandidateId,customText}`，返回 TaskDetail。旧版本、重复提交与无效 ID 被拒绝；确认与恢复调度在引擎同一命令中提交。
+- `POST /topic-discussion`：`{expectedRevision,text}`，返回 TaskDetail；数字/明确选择或自定义前缀调用选题操作，候选问题列出已有方向，换一批仅重跑选题节点，其他问题进入携带候选上下文的异步讨论。讨论本身不确认课题。
+- explore 完成候选后置为 `stage:topic_selection/status:awaiting_topic`，引擎 `waiting_user`；继续按钮不能跳过选题。direct 只细化用户课题，delegate 在候选中返回 `topicRecommendation:{candidateId,reason}`，由宿主记录代选结果。两者不等待额外确认。
+- 自定义/编辑课题保留候选来源关联，但其 `selectedTopic.evidenceIds` 初始为空，后续必须核对旧文献是否适用于新问题；不把原候选证据自动当作新课题证据。所有状态沿用 SQLite 快照和审计持久化。
+
 未绑定 `claimId` 的节点（包括背景、文献、凝练课题）回传阶段字段、来源引用、候选观察与缺口；`structured.evidenceRelations` 必须省略或为空。`claims` 在这些阶段仅表示有来源的候选观察，不是持久化主张的判断。模型误填关系时要求重新表达，保留反证、限制和实际来源，不能静默删除后通过。
 
 绑定主张的节点由宿主指定主张 ID 和版本；关系中省略身份时继承绑定，显式越权或旧版本被拒绝。同一主张版本和证据最多有一条 `support`；正反信息并存须由模型解释为一条 `mixed`，可另附 `qualify + unresolved` 表达条件。不同主张分别判定方向。执行器、引擎接收和独立裁判共用关系校验器。

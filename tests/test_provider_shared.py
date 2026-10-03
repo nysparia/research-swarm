@@ -14,6 +14,9 @@ from test_review_routing import ScriptedRoleSettings, judge_fixture, redteam_fix
 
 class SharedProviderTests(unittest.TestCase):
     def setUp(self):
+        from recovery_fixtures import ImmediateRecovery
+        recovery = patch('research_swarm.providers.ProviderRecovery', ImmediateRecovery)
+        recovery.start(); self.addCleanup(recovery.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -85,8 +88,8 @@ class SharedProviderTests(unittest.TestCase):
         self.assertEqual(restarted.usage('task-a')['totalTokens'], 18)
         self.assertEqual(restarted.usage('task-a')['calls'], 1)
         self.assertEqual(restarted.usage('task-a')['errors'], 0)
-        self.assertEqual(restarted.usage('task-b')['errors'], 1)
-        self.assertEqual(restarted.usage()['calls'], 2)
+        self.assertEqual(restarted.usage('task-b')['errors'], 4)
+        self.assertEqual(restarted.usage()['calls'], 5)
         self.assertIsNone(restarted.usage()['billedCurrency'])
         self.assertNotIn('secret', json.dumps(restarted.usage()))
 
@@ -136,7 +139,7 @@ class SharedProviderTests(unittest.TestCase):
         engine = Engine(cycle_library(), self.root / 'state.sqlite', runner=runner, workflow='autonomous', max_workers=2)
         self.addCleanup(engine.close)
         runner.tools = LocalResearchTools(engine._artifact_root)
-        engine.command('start-autonomous', {'researchCycle': True, 'mode': 'llm'})
+        engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct', 'mode': 'llm'})
         wait_until(lambda: engine.snapshot()['report'].get('ready') or engine.snapshot()['status'] == 'failed')
         state = engine.snapshot()
         self.assertNotEqual(state['status'], 'failed', [n.get('error') for n in state['nodes']])

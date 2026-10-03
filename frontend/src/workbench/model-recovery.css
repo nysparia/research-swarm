@@ -1,0 +1,8 @@
+.sw-recovery-node { border:1px solid #ebd7b4; border-radius:12px; padding:14px; margin:14px 0; background:#fffbf3; overflow-wrap:anywhere; }
+.sw-recovery-node h3 { margin:0 0 8px; font-size:13px; font-weight:550; }
+.sw-recovery-node p { font-size:12px; line-height:1.75; margin:8px 0; color:#865922; }
+.sw-recovery-node>div:last-child { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.sw-model-wait { font-size:12px; line-height:1.7; color:#8a651e; }
+.sw-model-wait strong,.sw-model-wait span { display:block; }
+.sw-model-wait p { margin:6px 0; }
+.sw-live-agents>span { max-width:320px; white-space:normal; font-size:11px; }

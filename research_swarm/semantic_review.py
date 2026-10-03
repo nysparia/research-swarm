@@ -180,6 +180,9 @@ direct_statement 只用于正文直接陈述；verified_measurement 须有宿主
                 'claims': [], 'structured': {'hypothesisVerdict': verdict, 'evidenceRelations': relations, 'review': review},
                 'unresolved': list(dict.fromkeys(gaps))}
     except Exception as exc:
+        from .providers import ModelConnectionError, ModelRequestCancelled
+        if isinstance(exc, (ModelConnectionError, ModelRequestCancelled)):
+            raise
         record_validation(settings, exc)
         # Provider or review failure preserves the evidence and explicitly loses decisiveness.
         message = '独立裁判调用或输出校验失败；保留证据，等待重新复核。'

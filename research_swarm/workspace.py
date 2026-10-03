@@ -191,9 +191,33 @@ class WorkspaceApplication:
 
     def _synchronize(self, record):
         app = self._apps.get(record['id'])
-        if not app or record['phase'] != 'researching':
+        if not app or record['phase'] not in ('researching', 'failed'):
             return
         state = app.snapshot()
+        failed = [n for n in state['nodes'] if n['active'] and not n['input'].get('superseded') and n['status'] == 'failed']
+        seen = set(record.get('shownNodeFailures', []))
+        fresh = [n for n in failed if n['id'] + ':' + str(n['version']) not in seen]
+        for node in fresh:
+            seen.add(node['id'] + ':' + str(node['version']))
+            self._message(record, 'assistant', '节点暂未完成：' + node['title'] + '\n\n' +
+                          (node.get('error') or {}).get('message', '执行失败') + '\n\n已完成结果保留，可使用“重试节点”恢复；其他独立分支继续执行。', 'progress')
+        record['shownNodeFailures'] = sorted(seen)
+        previous_error = record.get('error')
+        record['error'] = '\n'.join(n['title'] + '：' + (n.get('error') or {}).get('message', '执行失败') for n in failed) or None
+        next_phase = 'failed' if state['status'] == 'failed' else 'researching'
+        changed_phase = record['phase'] != next_phase
+        record['phase'] = next_phase
+        if fresh or changed_phase or previous_error != record['error']:
+            self._save(record)
+        from .topic_selection import topic_message
+        cycle = state['project'].get('researchCycle') or {}
+        if cycle.get('topicSelection'):
+            selection_key = cycle['topicSelection']['id'] + ':' + cycle['topicSelection']['status']
+            if record.get('shownTopicSelectionId') != selection_key:
+                self._message(record, 'assistant', topic_message(cycle), 'progress')
+                record['messages'][-1]['topicSelectionId'] = cycle['topicSelection']['id']
+                record['shownTopicSelectionId'] = selection_key
+                self._save(record)
         decision = state['project'].get('researchDecision')
         if decision and record.get('shownDecisionId') != decision['id']:
             from .research_contracts import decision_message
@@ -210,13 +234,6 @@ class WorkspaceApplication:
             directory = self._data_root / record['id'] / 'reports'
             directory.mkdir(exist_ok=True)
             (directory / f'round-{run["round"]}.json').write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
-            self._save(record)
-        elif state['status'] == 'failed':
-            record['phase'] = 'failed'
-            failed = [n for n in state['nodes'] if n['active'] and n['status'] == 'failed']
-            reasons = [n['title']+'：'+(n.get('error') or {}).get('message','执行失败，请查看节点记录') for n in failed]
-            record['error'] = '\n'.join(reasons)
-            self._message(record, 'assistant', f'{len(failed)} 个节点执行失败：\n'+'\n'.join('- '+reason for reason in reasons)+'\n已完成结果保留，失败原因和原始错误可在节点历史中查看。', 'progress')
             self._save(record)
 
     def workflow_version(self, task_id):
@@ -255,8 +272,11 @@ class WorkspaceApplication:
                     if state.get('status') == 'running':
                         state['status'] = 'idle'
                     for node in state.get('nodes', []):
+                        node.pop('modelWait', None)
                         if node.get('status') == 'running':
                             node.update(status='pending', interrupted=True)
+                    from .execution_status import summarize
+                    state['executionSummary'] = summarize(state, lambda _: False)
                     for paper in state.get('papers', []):
                         if paper.get('workerStatus') == 'running':
                             paper['workerStatus'] = 'pending'
@@ -319,10 +339,13 @@ class WorkspaceApplication:
         if settings['mode'] != 'llm' or not settings['capabilities']['modelReady']:
             return self._local_draft(text, previous, editing)
         prompt = '''你是计算机科研需求协作者。把用户自然语言或编辑后的Markdown整理成清晰、可研究的需求文档。保留用户目的、修改、约束和未确定事项，不能擅自定范围或实验结论；缺失条件以最多3个可选澄清问题引导，不阻止合理开始。用户不需要读论文，研究由节点完成。
-生成需求草稿时，必须返回JSON: {"action":"draft","conceptResolutions":[],"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"]}。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
+生成需求草稿时，必须返回JSON: {"action":"draft","conceptResolutions":[],"title":"简洁课题名","markdown":"完整Markdown需求文档","summary":"一段简短修改说明或回应","questions":["问题"],"requirements":[{"id":"requirement:1","description":"具体研究需求","acceptance":"验收标准","constraints":"约束"}],"queries":["英文精确学术检索式"],"topicMode":"explore|direct|delegate","topicIntent":"判断依据"}。topicMode 只有在用户明确指定单一具体课题时才用 direct，明确授权系统代选时才用 delegate，其余用 explore；缺少明确证据时默认 explore。requirements须完整覆盖MD，最多8条；queries最多4条，分别覆盖具体方法、基线、部署或验证，使用2–6个公认英文术语/具体方法名，不拼接整段愿望或否定修饰（例如无文本决策应检索 compact neural classifier、tabular MLP、TinyML inference，不检索 without text generation）。本机工具可采集环境、安装独立科研依赖、执行Python实验；不要把硬件/环境信息要求用户手动采集。缺少应用场景时保留未知，并提供最小可行实验候选及其适用范围。不得返回凭据或API配置。Markdown不含HTML、脚本。'''
         prompt += '\n已明确品牌、发布方或论文上下文的研究对象，不要求用户再提供定义。官方产品定义、发布状态、模型与能力边界属于需要联网核查的事实，写入待核实事项；未找到官方来源时保留原对象和未知项，允许开始研究。清理已解除的旧概念澄清问题，不在 summary 或 questions 中把事实核查转嫁给用户。'
         prompt += '\n另返回 plan:{"capabilities":[能力ID],"rationale":"为何需要这些能力"}。能力仅选 review(综述)、investigation(机制研究)、reproduction(复现)、experimentation(实验)、paper_preparation(论文写作)，可以组合。只有用户明确希望撰写论文才选择 paper_preparation。'
-        messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'previousResearch': research_context}, ensure_ascii=False)}]
+        prompt += '\ntopicIntent 必须逐字引用 explicitUserInstructions 中明确指定具体课题或委托代选的原文，不能引用 AI 生成的需求。宽泛主题如“RAG 是否降低幻觉，为什么论文结论不同”属于 explore；确认开始研究不等于委托选题。保留用户先前明确的选题方式，新的明确修改优先。未明确选择的实验与方向仅为建议，不能写成用户已确定范围。'
+        added_text = text if not editing else '\n'.join(line for line in text.splitlines() if line not in previous.splitlines())
+        explicit_instructions = ((self._draft_scope.get() or {}).get('identityContext', '') + '\n' + added_text).strip()
+        messages = [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps({'mode': '用户刚编辑完，请保留编辑并润色' if editing else '对话补充需求', 'previousMarkdown': previous, 'userInput': text, 'explicitUserInstructions': explicit_instructions, 'previousResearch': research_context}, ensure_ascii=False)}]
         result, understanding = draft_with_concepts(self, messages, text, previous, editing)
         if not isinstance(result.get('markdown'), str) or not result['markdown'].strip() or len(result['markdown']) > 60000:
             raise ValueError('模型没有返回有效需求文档，用户编辑已保存，可重试润色')
@@ -337,10 +360,13 @@ class WorkspaceApplication:
         queries = result.get('queries')
         if not isinstance(queries, list) or not queries or any(not isinstance(q, str) or not q.strip() for q in queries):
             raise ValueError('模型未给出有效学术检索式，可修改需求后重试')
+        from .topic_selection import normalize_intent
+        topic_mode, topic_intent = normalize_intent(result.get('topicMode'), result.get('topicIntent'), explicit_instructions)
         return {'title': str(result.get('title') or '科研任务')[:80], 'markdown': result['markdown'].strip(),
                 'summary': str(result.get('summary') or '需求文档已更新，请继续补充或开始研究。')[:2000],
                 'questions': [str(q)[:600] for q in result.get('questions', [])[:3]], 'source': result.get('_source', 'model'), 'requirements': normalized,
-                'queries': [q.strip()[:1000] for q in queries[:4]], 'plan': result.get('plan'), 'conceptUnderstanding': understanding}
+                'queries': [q.strip()[:1000] for q in queries[:4]], 'plan': result.get('plan'), 'conceptUnderstanding': understanding,
+                'topicMode': topic_mode, 'topicIntent': topic_intent}
 
     def _polish(self, task_id, token, revision, text, previous, editing):
         try:
@@ -468,11 +494,20 @@ class WorkspaceApplication:
                     if state['project'].get('researchStarted') or state['report'].get('ready') or record['runs']:
                         app.engine.command('next-round', {})
                     mode = 'llm' if model_cycle else 'evidence'
-                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': model_cycle, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm', 'taskMode': record.get('taskMode', 'research')})
+                    state = app.engine.command('start-autonomous', {'requirements': compiled['requirements'], 'title': record['title'], 'mode': mode, 'allowNewSearch': model_cycle, 'searchBudgetId': identity(), 'markdown': record['document']['markdown'], 'researchCycle': mode == 'llm', 'paperResearch': mode == 'llm', 'taskMode': record.get('taskMode', 'research'), 'topicMode': compiled.get('topicMode', 'explore'), 'topicIntent': compiled.get('topicIntent', '')})
                     record['phase'] = 'researching'
                     record['needsRetrieval'] = False
                     record['round'] = state['project']['round']
-                    self._message(record, 'assistant', '先扩充研究背景、检索文献并凝练课题，再提出猜想、索求数据；证据不足时设计与执行实验，数据返回后重新论证。研究取舍会暂停并在对话中请你决定。' if mode == 'llm' else f'已建立 {len(state["facetNodes"])} 个资料节点，开始离线核验已有资料。本模式不调用模型、不联网检索；缺少资料时记录证据缺口。', 'progress')
+                    if mode == 'llm':
+                        topic_mode = state['project'].get('topicMode', 'explore')
+                        topic_progress = ('先扩充背景并检索文献，再整理候选课题供你选择或自定义。课题确定后才会提出猜想、索求数据并开展后续研究。'
+                                          if topic_mode == 'explore' else '先扩充背景、检索文献，再按你指定的课题细化研究。'
+                                          if topic_mode == 'direct' else '先扩充背景、检索文献并比较候选课题，再按你的委托选定一个课题，说明理由后继续研究。')
+                        if record.get('taskMode') == 'reproduction':
+                            topic_progress = '先定位指定论文与复现条件，再提出复现猜想、索求数据。复现设置的取舍会在对话中请你决定。'
+                    else:
+                        topic_progress = f'已建立 {len(state["facetNodes"])} 个资料节点，开始离线核验已有资料。本模式不调用模型、不联网检索；缺少资料时记录证据缺口。'
+                    self._message(record, 'assistant', topic_progress, 'progress')
                     self._save(record)
         except Exception as exc:
             with self._lock:
@@ -512,6 +547,9 @@ class WorkspaceApplication:
             app = self._apps.get(task_id)
             if app and record['phase'] == 'researching' and not editing and not text.strip().startswith('修改需求：'):
                 state = app.engine.snapshot()
+                from .topic_selection import pending as topic_pending
+                if topic_pending(state['project']):
+                    return self.backend.topic_discussion(task_id, {'text': text.strip(), 'expectedRevision': payload.get('expectedRevision', state['revision'])})
                 decision = state['project'].get('researchDecision')
                 if decision:
                     answer = {'decisionId': decision['id'], 'expectedRevision': state['revision'], 'note': text.strip()}
@@ -527,7 +565,7 @@ class WorkspaceApplication:
             if app:
                 app.post('/api/actions/pause', {})
                 project = app.engine.snapshot()['project']
-                if project.get('researchDecision'):
+                if project.get('researchDecision') or ((project.get('researchCycle') or {}).get('topicSelection') or {}).get('status') == 'pending':
                     app.engine.command('paper-context', {'paperContext': project.get('paperContext', {}), 'supersedeDecision': True})
             previous = record['document']['markdown']
             record['token'] += 1
@@ -808,6 +846,7 @@ class WorkspaceApplication:
             self._closed = True
             self._stop_event.set()
             apps_to_close = list(self._apps.values())
+        self.settings.close()
         for app in self._v2_apps.values():
             app.close()
         for app in apps_to_close:

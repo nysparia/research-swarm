@@ -11,6 +11,10 @@ from research_swarm.providers import Settings, parse_json_object
 
 
 class ProviderTests(unittest.TestCase):
+    def setUp(self):
+        from recovery_fixtures import ImmediateRecovery
+        recovery = patch('research_swarm.providers.ProviderRecovery', ImmediateRecovery)
+        recovery.start(); self.addCleanup(recovery.stop)
     def test_legacy_configuration_migrates_only_to_main_and_survives_role_update(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'config.local.json'
@@ -348,12 +352,12 @@ class ProviderTests(unittest.TestCase):
             settings = Settings(Path(temp), None)
             settings.data['provider']['apiKey'] = 'test-key'
             failures = [urllib.error.HTTPError('https://example.com', 503, 'Unavailable', {},
-                        io.BytesIO(b'{"error":{"message":"upstream busy test-key"}}')) for _ in range(2)]
+                        io.BytesIO(b'{"error":{"message":"upstream busy test-key"}}')) for _ in range(4)]
             with patch('urllib.request.urlopen', side_effect=failures) as send:
                 with self.assertRaisesRegex(RuntimeError, 'HTTP 503.*upstream busy') as raised:
                     settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True)
             self.assertNotIn('test-key', str(raised.exception))
-            self.assertEqual(send.call_count, 2)
+            self.assertEqual(send.call_count, 4)
 
     def test_truncation_retry_expands_budget_but_remains_bounded(self):
         with tempfile.TemporaryDirectory() as temp:

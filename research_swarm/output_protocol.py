@@ -104,7 +104,7 @@ def validate_node_output(value, known, node=None):
     if node and node.get('input', {}).get('researchStep'):
         try:
             validate_output(node['input']['researchStep'], node.get('phase'), structured,
-                            known, node['input'].get('hypothesisId'))
+                            known, node['input'].get('hypothesisId'), node['input'].get('topicMode', 'explore'))
         except ValueError as error:
             message = str(error)
             import re

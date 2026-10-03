@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f7fbff"/>
+      <stop offset="1" stop-color="#eef4fb"/>
+    </linearGradient>
+    <linearGradient id="redPanel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fff7f5"/>
+      <stop offset="1" stop-color="#fff0ed"/>
+    </linearGradient>
+    <linearGradient id="bluePanel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f5faff"/>
+      <stop offset="1" stop-color="#eaf4ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#7b91aa" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#d9534f"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2077c8"/>
+    </marker>
+    <style>
+      .font { font-family: "Microsoft YaHei", "DengXian", "Arial", sans-serif; fill: #18324b; }
+      .title { font-size: 38px; font-weight: 700; letter-spacing: 1px; }
+      .subtitle { font-size: 20px; fill: #587188; }
+      .panel-title { font-size: 27px; font-weight: 700; }
+      .step-title { font-size: 20px; font-weight: 700; }
+      .body { font-size: 18px; }
+      .small { font-size: 15px; fill: #6f8395; }
+      .white { fill: #ffffff; }
+      .red { fill: #c94340; }
+      .blue { fill: #1665ad; }
+      .muted { fill: #5e7488; }
+      .card-title { font-size: 19px; font-weight: 700; }
+      .card-body { font-size: 16px; fill: #36546b; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1100" fill="url(#bg)"/>
+  <circle cx="1490" cy="100" r="190" fill="#dfeeff" opacity="0.55"/>
+  <circle cx="80" cy="1040" r="180" fill="#ffe9e4" opacity="0.45"/>
+
+  <text x="80" y="78" class="font title">科研对话 UX：从“自动替用户做决定”到“让用户掌握研究范围”</text>
+  <text x="82" y="116" class="font subtitle">Jev 示例复盘｜问题链路 + 修改优先级｜供团队评审</text>
+
+  <!-- left problem panel -->
+  <rect x="60" y="165" width="710" height="690" rx="28" fill="url(#redPanel)" stroke="#f1b4ad" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="165" width="710" height="72" rx="28" fill="#fff0ed"/>
+  <rect x="60" y="205" width="710" height="32" fill="#fff0ed"/>
+  <circle cx="102" cy="201" r="17" fill="#d9534f"/>
+  <path d="M102 190 L102 207 M102 213 L102 214" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text x="135" y="211" class="font panel-title red">现在发生了什么？</text>
+  <text x="135" y="239" class="font small">核心不是单一提示词，而是范围、流程和 UI 一起越界</text>
+
+  <line x1="415" y1="305" x2="415" y2="342" stroke="#d9534f" stroke-width="3" marker-end="url(#arrowRed)"/>
+  <line x1="415" y1="425" x2="415" y2="462" stroke="#d9534f" stroke-width="3" marker-end="url(#arrowRed)"/>
+  <line x1="415" y1="545" x2="415" y2="582" stroke="#d9534f" stroke-width="3" marker-end="url(#arrowRed)"/>
+  <line x1="415" y1="665" x2="415" y2="702" stroke="#d9534f" stroke-width="3" marker-end="url(#arrowRed)"/>
+
+  <rect x="105" y="260" width="620" height="70" rx="16" fill="#ffffff" stroke="#efc1bb"/>
+  <circle cx="140" cy="295" r="19" fill="#d9534f"/>
+  <text x="140" y="302" class="font white step-title" text-anchor="middle">1</text>
+  <text x="178" y="291" class="font step-title">用户原问题</text>
+  <text x="178" y="316" class="font body">架构 / 原理 / 与 Transformer LLM 的区别</text>
+
+  <rect x="105" y="380" width="620" height="70" rx="16" fill="#ffffff" stroke="#efc1bb"/>
+  <circle cx="140" cy="415" r="19" fill="#d9534f"/>
+  <text x="140" y="422" class="font white step-title" text-anchor="middle">2</text>
+  <text x="178" y="411" class="font step-title">需求模型扩大范围</text>
+  <text x="178" y="436" class="font body">自动加入“延迟与成本”，但没有用户确认</text>
+
+  <rect x="105" y="500" width="620" height="70" rx="16" fill="#ffffff" stroke="#efc1bb"/>
+  <circle cx="140" cy="535" r="19" fill="#d9534f"/>
+  <text x="140" y="542" class="font white step-title" text-anchor="middle">3</text>
+  <text x="178" y="531" class="font step-title">LLM 模式默认启动完整科研循环</text>
+  <text x="178" y="556" class="font body">背景 → 文献 → 课题 → 猜想 → 数据 → 实验</text>
+
+  <rect x="105" y="620" width="620" height="70" rx="16" fill="#ffffff" stroke="#efc1bb"/>
+  <circle cx="140" cy="655" r="19" fill="#d9534f"/>
+  <text x="140" y="662" class="font white step-title" text-anchor="middle">4</text>
+  <text x="178" y="651" class="font step-title">猜想自动拆出数据需求</text>
+  <text x="178" y="676" class="font body">“计费归因”被提升为主线子任务</text>
+
+  <rect x="105" y="740" width="620" height="70" rx="16" fill="#fff9f7" stroke="#d9534f" stroke-width="2"/>
+  <circle cx="140" cy="775" r="19" fill="#b93432"/>
+  <text x="140" y="782" class="font white step-title" text-anchor="middle">5</text>
+  <text x="178" y="771" class="font step-title red">用户被迫在“凭据”与“代理实验”间二选一</text>
+  <text x="178" y="796" class="font body">资源阻塞被包装成研究方向，内部术语直接露出</text>
+
+  <rect x="105" y="830" width="620" height="1" fill="#efc1bb"/>
+  <text x="105" y="850" class="font small">根因：建议被升级成主线；所有阶段复用同一个 researchDecision；UI 没有解释上下文</text>
+
+  <!-- right solution panel -->
+  <rect x="810" y="165" width="730" height="690" rx="28" fill="url(#bluePanel)" stroke="#a9cdec" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="810" y="165" width="730" height="72" rx="28" fill="#eaf4ff"/>
+  <rect x="810" y="205" width="730" height="32" fill="#eaf4ff"/>
+  <circle cx="852" cy="201" r="17" fill="#2077c8"/>
+  <path d="M844 201 L850 207 L861 193" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="885" y="211" class="font panel-title blue">建议怎么改？</text>
+  <text x="885" y="239" class="font small">优先修流程，再修决策、提示词和展示</text>
+
+  <rect x="850" y="265" width="650" height="126" rx="18" fill="#1264aa"/>
+  <text x="880" y="300" class="font white card-title">P0 · 先改研究路由</text>
+  <text x="880" y="329" class="font white card-body">• 按意图区分：解释 / 比较 / 实验 / 复现</text>
+  <text x="880" y="354" class="font white card-body">• 解释型任务默认不启动猜想、实验和计费分支</text>
+  <text x="880" y="379" class="font white card-body">• 让 researchPlan 真正传入节点，避免约束成为“死提示词”</text>
+
+  <rect x="850" y="410" width="650" height="126" rx="18" fill="#2e8aca"/>
+  <text x="880" y="445" class="font white card-title">P1 · 拆分决策权限</text>
+  <text x="880" y="474" class="font white card-body">• 课题方向、可选扩展、资源阻塞、实验同意分别建模</text>
+  <text x="880" y="499" class="font white card-body">• 未获用户接受的扩展，不得生成正式子任务</text>
+  <text x="880" y="524" class="font white card-body">• 缺凭据先显示限制，不要直接要求用户提供账号或账单</text>
+
+  <rect x="850" y="555" width="650" height="126" rx="18" fill="#55a6d6"/>
+  <text x="880" y="590" class="font white card-title">P2 · 收紧提示词</text>
+  <text x="880" y="619" class="font white card-body">• 区分“用户问题 / 模型推断 / 可选建议”</text>
+  <text x="880" y="644" class="font white card-body">• 成本、凭据、代理实验只能作为可选扩展</text>
+  <text x="880" y="669" class="font white card-body">• 提问前先解释：为什么问、影响什么、跳过会怎样</text>
+
+  <rect x="850" y="700" width="650" height="126" rx="18" fill="#b9def3"/>
+  <text x="880" y="735" class="font card-title blue">P3 · 重做用户界面</text>
+  <text x="880" y="764" class="font card-body">• 给 3–5 个与原问题对应的方向，并提供“整体概览 / 跳过”</text>
+  <text x="880" y="789" class="font card-body">• 把内部指标翻译成自然语言，不直接显示 token / schema 术语</text>
+  <text x="880" y="814" class="font card-body">• 决策卡展示证据、缺口、影响范围和可选后续</text>
+
+  <!-- ideal interaction strip -->
+  <rect x="60" y="900" width="1480" height="145" rx="25" fill="#ffffff" stroke="#b9cfe2" stroke-width="2" filter="url(#shadow)"/>
+  <text x="95" y="938" class="font panel-title blue">这个 Jev 问题的理想交互</text>
+  <text x="95" y="968" class="font small">先完成主线解释，再把实验和成本验证作为明确标注的可选扩展</text>
+
+  <rect x="95" y="985" width="380" height="42" rx="12" fill="#eaf4ff"/>
+  <text x="285" y="1012" class="font card-title blue" text-anchor="middle">① 先给架构 / 原理 / 差异概览</text>
+  <path d="M492 1006 L535 1006" stroke="#2077c8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <rect x="555" y="985" width="380" height="42" rx="12" fill="#eaf4ff"/>
+  <text x="745" y="1012" class="font card-title blue" text-anchor="middle">② 标明证据、未知和推断边界</text>
+  <path d="M952 1006 L995 1006" stroke="#2077c8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <rect x="1015" y="985" width="480" height="42" rx="12" fill="#fff4df" stroke="#edc56d"/>
+  <text x="1255" y="1012" class="font card-title" text-anchor="middle" fill="#8a5a00">③ 可选：成本 / 代理实验，不影响主线</text>
+
+  <text x="800" y="1080" class="font small" text-anchor="middle">团队评审问题：哪些方向必须保留？哪些步骤需要用户明确同意？</text>
+</svg>

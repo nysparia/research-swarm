@@ -60,7 +60,7 @@ def validate_hypotheses(items, known, required=False):
 from .scientific_validation import validate_protocol, validate_verdict
 
 
-def validate_output(step, phase, structured, known, hypothesis_id=None):
+def validate_output(step, phase, structured, known, hypothesis_id=None, topic_mode='explore'):
     if step not in LABELS:
         raise ValueError('未知研究阶段')
     if step == 'background':
@@ -68,7 +68,11 @@ def validate_output(step, phase, structured, known, hypothesis_id=None):
     elif step == 'literature':
         value = _object(structured, 'literatureReview'); _text(value, ('summary',)); _ids(value, known)
     elif step == 'topic':
-        value = _object(structured, 'researchTopic'); _text(value, ('title', 'question', 'rationale')); _ids(value, known)
+        if topic_mode == 'reproduction':
+            value = _object(structured, 'researchTopic'); _text(value, ('title', 'question', 'rationale')); _ids(value, known)
+        else:
+            from .topic_selection import validate_topics
+            validate_topics(structured, known, topic_mode)
     elif step == 'hypothesis_generation':
         validate_hypotheses(structured.get('hypotheses'), known, required=True)
     elif step == 'hypothesis' and phase != 'aggregate':
@@ -146,12 +150,15 @@ def start(engine):
     engine._state['project'].setdefault('researchBudget', {})['maxDepth'] = max(5, engine._limit('maxDepth'))
     cycle = {'status': 'running', 'stage': 'background', 'iteration': 1, 'hypotheses': [],
              'dataRequests': [], 'experiments': [], 'background': None, 'literatureReview': None, 'topic': None,
-             'unresolved': []}
+             'unresolved': [], 'topicCandidates': [], 'topicSelection': None}
     engine._state['project']['researchCycle'] = cycle
     root = engine._get_node('central'); root['input']['researchStep'] = 'hypothesis_generation'
     background = _spawn(engine, root, 'background', '扩充问题的上下文、边界与相关领域')
     literature = _spawn(engine, root, 'literature', '检索文献与已有数据，查清现状及证据缺口', {'dependsOn': [background['id']]})
-    _spawn(engine, root, 'topic', '根据文献研究凝练具体课题', {'dependsOn': [literature['id']]})
+    mode = 'reproduction' if engine._state['project'].get('taskMode') == 'reproduction' else engine._state['project'].get('topicMode', 'explore')
+    _spawn(engine, root, 'topic', '根据文献研究提出候选课题' if mode in ('explore', 'delegate') else '细化用户指定课题',
+           {'dependsOn': [literature['id']], 'topicMode': mode,
+            'topicIntent': copy.deepcopy(engine._state['project'].get('topicIntent', {}))})
 
 
 def _done(engine, node, output):
@@ -260,7 +267,31 @@ def accept(engine, node, output, token):
     hid = node['input'].get('hypothesisId')
     hypothesis = next((h for h in cycle['hypotheses'] if h['id'] == hid), None)
     demand = next((d for d in cycle['dataRequests'] if d['id'] == node['input'].get('demandId')), None)
-    if step in ('background', 'literature', 'topic'):
+    if step == 'topic' and node['input'].get('topicMode') != 'reproduction':
+        mode = node['input'].get('topicMode', 'explore')
+        cycle['topicCandidates'] = copy.deepcopy(structured.get('topicCandidates', []))
+        output['evidenceIds'] = list(dict.fromkeys(output['evidenceIds'] + [eid for candidate in cycle['topicCandidates'] for eid in candidate['evidenceIds']]))
+        selection = {'id': node['id'] + ':' + str(node['version']), 'nodeId': node['id'], 'status': 'pending'}
+        if mode in ('direct', 'delegate'):
+            recommendation = structured.get('topicRecommendation', {})
+            chosen = structured['selectedTopic'] if mode == 'direct' else next(c for c in cycle['topicCandidates'] if c['id'] == recommendation['candidateId'])
+            selection.update(status='selected', mode='delegated' if mode == 'delegate' else 'direct',
+                             selectedTopic=copy.deepcopy(chosen), actor='system' if mode == 'delegate' else 'user',
+                             reason=recommendation.get('reason', '按用户明确指定的课题继续研究。'), at=engine._cycle_now(),
+                             sourceCandidateIds=[chosen['id']] if mode == 'delegate' else [])
+            if mode == 'delegate': selection['candidateId'] = chosen['id']
+            cycle['topic'] = copy.deepcopy(chosen)
+            engine._history('topic-selected', selection=copy.deepcopy(selection))
+        cycle['topicSelection'] = selection
+        _done(engine, node, output)
+        if mode == 'explore':
+            cycle.update(stage='topic_selection', status='awaiting_topic')
+            engine._stop_running('等待用户选择课题')
+            engine._state['paused'] = True
+            engine._manual_paused = True
+            engine._history('topic-candidates-ready', selectionId=selection['id'], candidates=copy.deepcopy(cycle['topicCandidates']))
+        return True
+    elif step in ('background', 'literature', 'topic'):
         key = {'background': 'background', 'literature': 'literatureReview', 'topic': 'researchTopic'}[step]
         cycle['topic' if step == 'topic' else key] = copy.deepcopy(structured[key])
     elif step == 'hypothesis_generation':
@@ -462,6 +493,9 @@ def _finish(engine, node, output, cycle):
 
 
 def report_failure(engine, node, token, error):
+    from .providers import ModelConnectionError, ModelRequestCancelled
+    if isinstance(error, (ModelConnectionError, ModelRequestCancelled)):
+        return False
     if not engine._state['project'].get('researchCycle') or node['input'].get('researchStep') != 'experiment_execution':
         return False
     node['output'] = {'summary': '实验执行遇到问题，已上报设计节点：' + str(error), 'evidenceIds': [], 'claims': [],
@@ -524,6 +558,7 @@ def rebuild(engine, node, kind, text, full_reset=False):
     if step in ('background', 'literature', 'topic'):
         archived = {n['id'] for n in engine._state['nodes'] if n['input'].get('researchStep') not in ('background', 'literature', 'topic') and n['id'] != 'central'}
         cycle.update(hypotheses=[], dataRequests=[], experiments=[], unresolved=[], iteration=1)
+        cycle.update(topicCandidates=[], topicSelection=None)
         for key in ({'background': ('background', 'literatureReview', 'topic'), 'literature': ('literatureReview', 'topic'), 'topic': ('topic',)}[step]):
             cycle[key] = None
         root = engine._get_node('central'); root['input']['researchStep'] = 'hypothesis_generation'; root['phase'] = 'aggregate'

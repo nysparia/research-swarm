@@ -24,6 +24,16 @@ def cycle_library():
 sample_library = cycle_library
 
 
+def topic_candidates(evidence_id='101'):
+    return [dict(id='T'+str(i), title=title, question=question, researchGap=gap,
+                 rationale='已有观察尚不能回答这个问题', evidenceIds=[evidence_id],
+                 minimalStudy='固定其余变量后比较条件', feasibility='CPU 小规模可行', limitations='仅合成调度测试证据')
+            for i, (title, question, gap) in enumerate([
+                ('索引选择性边界', '选择性如何影响查询延迟？', '缺少不同选择性的可比数据'),
+                ('索引维护代价', '更新频率如何影响总成本？', '缺少写入成本观察'),
+                ('缓存调节效应', '冷热缓存是否改变索引收益？', '未控制缓存条件')], 1)]
+
+
 class CycleRunner:
     def __init__(self, experiment=False, refute=False, new_hypothesis=False):
         self.calls = []; self.experiment = experiment; self.refute = refute; self.new_hypothesis = new_hypothesis
@@ -38,7 +48,15 @@ class CycleRunner:
             self.assert_background = context['upstreamResults'][0]['output']['structured']['background']
             return result({'literatureReview': {'summary': '已有数据', 'gaps': ['未知规模效应'], 'evidenceIds': ['101']}}, ['101'])
         if step == 'topic':
-            return result({'researchTopic': {'title': '索引收益条件', 'question': '在什么条件下有效', 'evidenceIds': ['101'], 'rationale': '需要比较选择性'}} , ['101'])
+            topic = {'title': '索引收益条件', 'question': '在什么条件下有效', 'evidenceIds': ['101'], 'rationale': '需要比较选择性'}
+            mode = node['input'].get('topicMode', 'explore')
+            if mode in ('direct', 'reproduction'):
+                return result({'selectedTopic' if mode == 'direct' else 'researchTopic': topic}, ['101'])
+            candidates = topic_candidates()
+            structured = {'topicCandidates': candidates}
+            if mode == 'delegate':
+                structured['topicRecommendation'] = {'candidateId': candidates[1]['id'], 'reason': '该缺口在当前资源下更易取得数据'}
+            return result(structured, ['101'])
         if step == 'hypothesis_generation':
             return result({'hypotheses': [{'id': 'H1', 'statement': '索引降低查询延迟', 'falsification': '相同数据下未改善', 'reason': '检验已有观察', 'evidenceIds': ['101']}]}, ['101'])
         if step == 'hypothesis' and node['phase'] != 'aggregate':
@@ -104,7 +122,7 @@ class ResearchCycleTests(unittest.TestCase):
         runner.tools = LocalResearchTools(Path(temp.name))
         self.addCleanup(temp.cleanup); self.addCleanup(engine.close)
         self._last_engine = engine
-        engine.command('start-autonomous', {'mode': 'llm', 'researchCycle': True, 'budgetTier': 'swarm'})
+        engine.command('start-autonomous', {'mode': 'llm', 'researchCycle': True, 'topicMode': 'direct', 'budgetTier': 'swarm'})
         wait_until(lambda: engine.snapshot()['report'].get('ready') or engine.snapshot()['status'] == 'failed', timeout=5)
         return engine.snapshot()
 
@@ -152,7 +170,7 @@ class ResearchCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             engine = Engine(sample_library(), Path(temp) / 'state.sqlite', workflow='autonomous')
             try:
-                engine.command('start-autonomous', {'researchCycle': True, 'budgetTier': 'compact'})
+                engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct', 'budgetTier': 'compact'})
                 self.assertGreaterEqual(engine._limit('maxDepth'), 5)
             finally:
                 engine.close()
@@ -161,7 +179,7 @@ class ResearchCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             engine = Engine(sample_library(), Path(temp) / 'state.sqlite', workflow='autonomous')
             try:
-                engine.command('start-autonomous', {'researchCycle': True})
+                engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct'})
                 stages = {n['input'].get('researchStep'): n for n in engine.snapshot()['nodes']}
                 affected = engine.command('impact', {'nodeId': stages['background']['id'], 'kind': 'modify'})
                 self.assertIn(stages['literature']['id'], affected['affectedIds'])
@@ -225,11 +243,11 @@ class ResearchCycleTests(unittest.TestCase):
             runner = CycleRunner()
             engine = Engine(sample_library(), Path(temp) / 'state.sqlite', runner=runner, workflow='autonomous')
             try:
-                engine.command('start-autonomous', {'researchCycle': True, 'paperResearch': True, 'mode': 'llm'})
-                wait_until(lambda: bool(engine.snapshot()['project'].get('researchDecision')))
-                state = engine.snapshot(); decision = state['project']['researchDecision']
+                engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'explore', 'paperResearch': True, 'mode': 'llm'})
+                wait_until(lambda: bool(engine.snapshot()['project']['researchCycle'].get('topicSelection')))
+                state = engine.snapshot(); decision = state['project']['researchCycle']['topicSelection']
                 self.assertEqual(engine._get_node(decision['nodeId'])['input']['researchStep'], 'topic')
-                engine.command('research-choice', {'expectedRevision': state['revision'], 'decisionId': decision['id'], 'optionIndex': 0})
+                engine.command('topic-selection', {'expectedRevision': state['revision'], 'mode': 'candidate', 'candidateId': 'T1'})
                 wait_until(lambda: engine.snapshot()['report'].get('ready'))
                 self.assertEqual(sum(s == 'topic' for s, _, _ in runner.calls), 1)
                 self.assertEqual(engine.snapshot()['project']['researchCycle']['status'], 'converged')
@@ -334,7 +352,7 @@ class ResearchCycleTests(unittest.TestCase):
             engine = Engine(library, Path(temp) / 'state.sqlite', runner=runner, workflow='autonomous')
             runner.tools = LocalResearchTools(Path(temp))
             try:
-                engine.command('start-autonomous', {'researchCycle': True, 'mode': 'llm'})
+                engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct', 'mode': 'llm'})
                 wait_until(lambda: engine.snapshot()['report'].get('ready'))
                 self.assertNotIn('bad-receipt', engine.snapshot()['project']['researchCycle']['dataRequests'][0]['evidenceIds'])
             finally: engine.close()
@@ -354,15 +372,15 @@ class ResearchCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             runner = CycleRunner(); engine = Engine(sample_library(), Path(temp)/'state.sqlite', runner=runner, workflow='autonomous')
             try:
-                engine.command('start-autonomous', {'researchCycle': True, 'paperResearch': True, 'mode': 'llm'})
-                wait_until(lambda: bool(engine.snapshot()['project'].get('researchDecision')))
-                state = engine.snapshot(); old_decision = state['project']['researchDecision']['id']
+                engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'explore', 'paperResearch': True, 'mode': 'llm'})
+                wait_until(lambda: bool(engine.snapshot()['project']['researchCycle'].get('topicSelection')))
+                state = engine.snapshot(); old_decision = state['project']['researchCycle']['topicSelection']['id']
                 background = next(n for n in state['nodes'] if n['input'].get('researchStep') == 'background')
                 engine.command('intervene', {'expectedRevision': state['revision'], 'nodeId': background['id'], 'kind': 'modify', 'text': '新的边界'})
-                self.assertFalse(engine.snapshot()['project'].get('researchDecision'))
+                self.assertFalse(engine.snapshot()['project']['researchCycle'].get('topicSelection'))
                 engine.command('resume', {})
-                wait_until(lambda: bool(engine.snapshot()['project'].get('researchDecision')))
-                self.assertNotEqual(engine.snapshot()['project']['researchDecision']['id'], old_decision)
+                wait_until(lambda: bool(engine.snapshot()['project']['researchCycle'].get('topicSelection')))
+                self.assertNotEqual(engine.snapshot()['project']['researchCycle']['topicSelection']['id'], old_decision)
             finally: engine.close()
 
     def test_designer_cannot_accept_tampered_artifacts(self):
@@ -501,7 +519,7 @@ class ResearchCycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'state.sqlite'
             engine = Engine(sample_library(), path, workflow='autonomous')
-            state = engine.command('start-autonomous', {'researchCycle': True, 'budgetTier': 'swarm'})
+            state = engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct', 'budgetTier': 'swarm'})
             engine.close()
             engine = Engine(sample_library(), path, workflow='autonomous')
             try:

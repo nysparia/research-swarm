@@ -2,6 +2,7 @@
 
 import copy
 import json
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -89,8 +90,10 @@ class ModelBoundaryTests(unittest.TestCase):
                 parse_json_object('{"summary":"Invalid numeric result","structured":{"score":' + constant + '}}')
 
     def test_nonfinite_json_uses_exactly_one_provider_format_retry(self):
-        # __new__ deliberately avoids Settings.__init__: no local config or environment key is read.
-        settings = Settings.__new__(Settings)
+        # Use isolated settings so the request lifecycle is initialized without user credentials.
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        settings = Settings(Path(temp.name), None)
+        settings.data['provider']['apiKeyEnv'] = ''
         logs = []
         with patch.object(settings, "_chat_once", side_effect=[
             '{"summary":"Invalid","structured":{"score":NaN}}',

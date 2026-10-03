@@ -17,7 +17,7 @@ def relation(**updates):
                 quality='limited', **{}) | updates
 
 
-NODE = {'id': 'topic', 'version': 2, 'kind': 'research', 'phase': 'execute', 'input': {'researchStep': 'topic'}}
+NODE = {'id': 'topic', 'version': 2, 'kind': 'research', 'phase': 'execute', 'input': {'researchStep': 'topic', 'topicMode': 'reproduction'}}
 
 
 def output():

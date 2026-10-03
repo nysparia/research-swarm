@@ -1,0 +1,14 @@
+.sw-topic-selection { margin:18px 0 28px; padding:16px; border:1px solid #dbe3ee; border-radius:14px; background:#f8faff; overflow-wrap:anywhere; }
+.sw-topic-selection>strong { display:block; font-size:15px; font-weight:600; }
+.sw-topic-selection>p { font-size:12px; line-height:1.7; color:#667085; margin:8px 0 14px; }
+.sw-topic-card { border:1px solid #e1e6ed; border-radius:10px; padding:14px; margin:12px 0; background:#fff; }
+.sw-topic-card h3 { margin:0 0 8px; font-size:14px; font-weight:600; line-height:1.6; }
+.sw-topic-card p,.sw-topic-card dl { font-size:12px; line-height:1.75; color:#515967; margin:8px 0; }
+.sw-topic-card dt { font-weight:550; margin-top:8px; color:#354055; }
+.sw-topic-card dd { margin:2px 0 0; }
+.sw-topic-card details { font-size:12px; line-height:1.65; margin:12px 0; color:#65758c; }
+.sw-topic-card summary { cursor:pointer; }
+.sw-topic-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.sw-topic-custom { display:block; margin-top:16px; font-size:13px; color:#454f60; }
+.sw-topic-custom textarea { display:block; box-sizing:border-box; width:100%; min-height:92px; padding:10px; margin-top:8px; border:1px solid #dbe3ee; background:white; color:#353a44; border-radius:8px; resize:vertical; font:inherit; line-height:1.7; }
+.sw-topic-selection :is(button,summary,textarea):focus-visible { outline:2px solid #007aff; outline-offset:3px; }

@@ -7,9 +7,10 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from contextlib import nullcontext
 from pathlib import Path
 
-from .providers import parse_json_object
+from .providers import parse_json_object, ModelConnectionError, ModelRequestCancelled
 from .tools import ResearchTools, experiment_statistics
 
 
@@ -105,7 +106,9 @@ class ResearchRunner:
         worker = copy.copy(self)
         worker.settings = DiagnosticSettings(self.settings, diagnostics)
         try:
-            output = worker._dispatch(node, context, log)
+            recovery = self.settings.request_context(cancelled=context.get('cancelled'), on_wait=context.get('model_wait'), not_before=context.get('modelNotBefore')) if hasattr(self.settings, 'request_context') else nullcontext()
+            with recovery:
+                output = worker._dispatch(node, context, log)
         except Exception as error:
             diagnostics.finish(error)
             raise
@@ -352,7 +355,9 @@ class ResearchRunner:
                 if allow_search:
                     system += ' 可按缺口调用 paper_retrieve(query,limit)，limit最多10；部分来源失败不等于无文献。'
                 system += relation_prompt(binding_for(node))
-            system += prompt_for(research_step, node['phase'])
+            system += prompt_for(research_step, node['phase'], node['input'].get('topicMode', 'explore'))
+            inputs['topicMode'] = node['input'].get('topicMode', 'explore')
+            inputs['topicIntent'] = node['input'].get('topicIntent', '')
             inputs['researchCycle'] = context.get('researchCycle')
             inputs['upstreamResults'] = [{k: n.get(k) for k in ('id', 'title', 'output')} for n in context.get('upstreamResults', [])]
             if research_step == 'experiment_design' and node['phase'] == 'aggregate' and self.local_tools and context.get('children'):
@@ -409,6 +414,8 @@ class ResearchRunner:
             try:
                 raw = self.settings.chat(messages, max_tokens=12000 if node.get('phase') == 'aggregate' else 7000, json_mode=True, on_retry=log, **kwargs)
             except Exception as exc:
+                if isinstance(exc, (ModelConnectionError, ModelRequestCancelled)):
+                    raise
                 if role != 'redteam':
                     raise
                 log('独立红队调用失败：' + self.settings.safe_error(exc))
@@ -441,7 +448,7 @@ class ResearchRunner:
                           if research_step else '无法支持的判断说明局限，不捏造引用。')
                 if research_step:
                     from .research_cycle_prompts import repair_template
-                    repair += repair_template(research_step, node['phase'])
+                    repair += repair_template(research_step, node['phase'], node['input'].get('topicMode', 'explore'))
                 messages.extend([{'role': 'assistant', 'content': raw}, {'role': 'user', 'content':
                     '输出校验失败，以下是可独立检查的全部错误：' + json.dumps(issues, ensure_ascii=False) +
                     '。' + repair + '必须保留全部反证、冲突和限制及其真实 evidenceIds；当前阶段不允许的关系应改写为候选观察或阶段说明，不得删除科学内容。请返回纠正后的完整 JSON。'}])

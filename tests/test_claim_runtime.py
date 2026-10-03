@@ -26,7 +26,7 @@ class ClaimRuntimeTests(unittest.TestCase):
         engine = self.engine(runner)
         from research_swarm.local_tools import LocalResearchTools
         runner.tools = LocalResearchTools(engine._artifact_root)
-        engine.command('start-autonomous', {'researchCycle': True, 'mode': 'llm', **options})
+        engine.command('start-autonomous', {'researchCycle': True, 'topicMode': 'direct', 'mode': 'llm', **options})
         wait_until(lambda: engine.snapshot()['report'].get('ready') or engine.snapshot()['status'] == 'failed')
         state = engine.snapshot()
         self.assertNotEqual(state['status'], 'failed', [n.get('error') for n in state['nodes']])

@@ -20,6 +20,8 @@ import { ArtifactInspector, ModelSettings } from './Inspectors';
 import { Checkpoint } from './Checkpoint';
 import { AgentStructure } from './AgentStructure';
 import { ConversationPane } from './ConversationPane';
+import type { TopicSelectionRequest } from './topicSelectionState';
+import { executionLabel, retryNodeRequest } from './executionState';
 import { ResearchOutputs } from './ResearchOutputs';
 import { PaneDivider } from './PaneDivider';
 import { DEFAULT_PANE_PERCENT } from './splitPaneState';
@@ -131,6 +133,8 @@ export function Workspace() {
     if (['empty', 'requirements'].includes(task.phase) || intent === 'next_round') {
       if (intent === 'next_round' && task.phase !== 'completed') throw new Error('研究状态已变化，请查看当前任务后再开始下一轮。');
       workspace.accept(await api<TaskDetail>(taskPath(id, '/messages'), { text, ...(intent === 'next_round' ? { startNewRound: true, expectedRevision: task.document.revision } : {}) }, 60000)); setIntent('ask'); setContext(null);
+    } else if (task.state?.project.researchCycle?.topicSelection?.status === 'pending') {
+      workspace.accept(await api<TaskDetail>(taskPath(id, '/topic-discussion'), { text, expectedRevision: task.state.revision }, 60000));
     } else {
       const artifact = context?.artifact || overviewArtifact(task);
       if (!artifact) throw new Error('当前研究记录还在建立，请稍后再发。');
@@ -141,11 +145,21 @@ export function Workspace() {
     const saved = drafts.current.get(id); if (saved?.text.trim() === text) drafts.current.set(id, { ...saved, text: '' });
     if (selectedId.current === id) setComposer(current => current.trim() === text ? '' : current);
   });
-  const retryInteraction = (item: Interaction) => guarded('message', async () => { if (!detail) return; await submitInteraction(detail, { kind: 'ask', text: item.text, target: item.target, showInConversation: true, scope: item.context?.scope, nodeId: item.context?.nodeId }); });
+  const retryInteraction = (item: Interaction) => guarded('message', async () => {
+    if (!detail) return;
+    if (detail.state?.project.researchCycle?.topicSelection?.status === 'pending') {
+      workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/topic-discussion'), { text: item.text, expectedRevision: detail.state.revision }, 60000));
+    } else {
+      await submitInteraction(detail, { kind: 'ask', text: item.text, target: item.target, showInConversation: true, scope: item.context?.scope, nodeId: item.context?.nodeId });
+    }
+  });
   const decide = (choice: { decisionId: string; expectedRevision: number; optionIndex: number }) => guarded('decision', async () => { if (detail) workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/research-choice'), choice, 60000)); });
+  const selectTopic = (choice: TopicSelectionRequest) => guarded('topic', async () => { if (detail?.state) workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/topic-selection'), choice, 60000)); });
   const start = () => guarded('start', async () => { if (!detail || !await editor.save()) return; const latest = await api<TaskDetail>(taskPath(detail.task.id)); workspace.accept(latest); if (latest.document.polishing) throw new Error('需求仍在整理，完成后即可开始。'); if (!editor.isCurrentSaved(detail.task.id)) throw new Error('需求文档有新的编辑，请保存后再开始研究。'); workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/start'), { expectedRevision: latest.document.revision }, 60000)); });
   const mode = (taskMode: 'research' | 'reproduction') => guarded('mode', async () => { if (!detail || !await editor.save()) return; workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/task-mode'), { taskMode })); });
   const action = (name: 'pause' | 'resume') => guarded(name, async () => { if (detail && canControlResearch(detail)) workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, `/actions/${name}`), {})); });
+  const retryNode = (node: ResearchNode) => guarded('node-retry', async () => { if (detail) workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/actions/retry'), retryNodeRequest(node), 60000)); });
+  const inspectNode = (node: ResearchNode) => setSelectedNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role });
   const exportTask = () => guarded('export', async () => { if (!detail) return; const response = await fetch(`/api${taskPath(detail.task.id, '/export')}`); if (!response.ok) { const result = await response.json(); throw new Error(result.error || '导出失败'); } const url = URL.createObjectURL(await response.blob()); const a = document.createElement('a'); a.href = url; a.download = `科研任务-第${detail.task.round}轮.zip`; a.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60000); });
   const openRun = async (round: number) => { if (!detail) return; const id = detail.task.id; setHistoric({ round }); try { const data = await api<Record<string, unknown>>(taskPath(id, `/runs/${round}`)); if (selectedId.current === id) setHistoric({ round, data }); } catch (e) { if (selectedId.current === id) setHistoric({ round, error: messageOf(e) }); } };
   const rollback = (checkpointId: string) => { if (!detail) return; modal.confirm({ title: '回到这个历史检查点？', content: '当前检查点之后的分支将回滚。执行记录和历史产物仍保留。', okText: '确认回滚', cancelText: '取消', onOk: () => guarded('rollback', async () => { workspace.accept(await api<TaskDetail>(taskPath(detail.task.id, '/actions/rollback'), { checkpointId })); setHistoryOpen(false); }) }); };
@@ -153,9 +167,9 @@ export function Workspace() {
   const tasks = workspace.tasks.filter(t => t.title.toLowerCase().includes(query.toLowerCase()));
   const boardProps = detail ? { detail, onProposal: setReview, onInspect: setSelectedArtifact, onNode: setSelectedNode, onPaper: setSelectedPaper, onTab: setTool, onExport: () => { void exportTask(); }, onContinue: focusComposer } : null;
   const currentError = error || workspace.error;
-  const liveAgents = detail?.state?.nodes.filter(n => n.active && n.status === 'running') || [];
+  const liveAgents = detail?.state?.nodes.filter(n => n.active && !n.input.superseded && n.status === 'running' && !n.modelWait) || [];
   const composerElement = <Composer value={composer} onChange={setComposer} onSend={() => { void send(); }} busy={busy === 'message'} onAttach={() => setMaterialsOpen(true)} placeholder={intent === 'next_round' ? '下一轮，你想继续研究什么？' : context ? (context.nodeId ? '继续讨论这个节点…' : '继续讨论这份内容…') : '继续讨论…'} context={context ? <><button className="sw-context-target" title="查看引用内容" onClick={() => setSelectedArtifact(context.artifact)} type="button"><Icon name="link" /><span>{context.nodeId ? detail?.state?.nodes.find(n => n.id === context.nodeId)?.title || context.artifact.title : context.artifact.title}</span><span>v{context.artifact.revision}</span></button><Button type="button" icon="close" aria-label="取消节点引用" onClick={() => { setContext(null); setIntent('ask'); }} />{!contextCurrent && <div className="sw-context-update">内容已更新 <button type="button" onClick={() => { const artifact = detail?.workbench?.artifacts.find(a => a.id === context.artifact.id); if (artifact) setContext({ ...context, artifact }); }}>使用最新版本</button></div>}</> : intent === 'next_round' ? <><span>下一轮研究</span><Button type="button" icon="close" aria-label="取消下一轮研究" onClick={() => setIntent('ask')} /></> : undefined} controls={context?.nodeId && <select aria-label="对话操作" value={intent} onChange={e => setIntent(e.target.value as 'ask' | 'deepen')}><option value="ask">讨论</option><option value="deepen">深入研究</option></select>} />;
-  const conversation = detail && <ConversationPane detail={detail} composer={composerElement} sending={!!busy && ['message', 'decision'].includes(busy)} onProposal={setReview} onRetry={item => { void retryInteraction(item); }} onDecision={choice => { void decide(choice); }} />;
+  const conversation = detail && <ConversationPane detail={detail} composer={composerElement} sending={!!busy && ['message', 'decision', 'topic', 'node-retry'].includes(busy)} onProposal={setReview} onRetry={item => { void retryInteraction(item); }} onDecision={choice => { void decide(choice); }} onTopicSelection={choice => { void selectTopic(choice); }} onRetryNode={node => { void retryNode(node); }} onInspectNode={inspectNode} />;
 
 
   return <div className={`sw-workspace sw-production sw-macos ${sidebar ? 'has-sidebar' : ''} ${workOpen ? 'has-workspace' : ''} ${smallWork ? 'mobile-workspace' : ''} ${preparing ? 'is-preparing' : ''}`} data-reduce-transparency={reduceTransparency} style={{ '--sw-conversation-width': `${panePercent}%`, '--sw-glass-alpha': .42 + glassTint * .0048, '--sw-glass-blur': `${18 + glassTint * .12}px` } as CSSProperties}>
@@ -168,7 +182,7 @@ export function Workspace() {
     <main className="sw-main">
       <header className="sw-shell-header"><div className="sw-shell-title">{!sidebar && <Button icon="panel" aria-label="展开侧边栏" onClick={() => setSidebar(true)} />}<div className="sw-title-stack"><h2 title={detail?.task.title}>{detail?.task.title || '新的研究'}</h2><span>{detail ? `第 ${detail.task.round} 轮研究` : '你的个人科研工作区'}</span></div></div>
         <div className="sw-shell-actions">
-          {!preparing && detail && <><div className="sw-live-agents">{liveAgents.slice(0, 3).map((node, index) => <button key={node.id} title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} aria-label={'查看节点：' + node.title} onClick={() => setSelectedNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}><Avatar small index={index} /></button>)}{liveAgents.length > 0 && <span>{liveAgents.length} 运行中</span>}</div>{canControlResearch(detail) ? <Button aria-label={detail.state?.paused ? '继续' : '暂停'} className="sw-research-control-button" icon={detail.state?.paused ? 'play' : 'pause'} busy={busy === 'pause' || busy === 'resume'} disabled={!!busy} onClick={() => { void action(detail.state?.paused ? 'resume' : 'pause'); }}><span className="sw-control-label">{detail.state?.paused ? '继续' : '暂停'}</span></Button> : <Badge status={detail.phase} />}</>}
+          {!preparing && detail && <><div className="sw-live-agents">{liveAgents.slice(0, 3).map((node, index) => <button key={node.id} title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} aria-label={'查看节点：' + node.title} onClick={() => setSelectedNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}><Avatar small index={index} /></button>)}{executionLabel(detail.state) && <span>{executionLabel(detail.state)}</span>}</div>{canControlResearch(detail) ? <Button aria-label={detail.state?.paused ? '继续' : '暂停'} className="sw-research-control-button" icon={detail.state?.paused ? 'play' : 'pause'} busy={busy === 'pause' || busy === 'resume'} disabled={!!busy} onClick={() => { void action(detail.state?.paused ? 'resume' : 'pause'); }}><span className="sw-control-label">{detail.state?.paused ? '继续' : '暂停'}</span></Button> : <Badge status={detail.phase} />}</>}
           <GlassGroup className="sw-toolbar-group" label="视图与工具">
             <AppearanceControl tint={glassTint} onTint={setGlassTint} reduced={reduceTransparency} onReduced={setReduceTransparency} />
             <GlassButton className="sw-toolbar-settings" icon="settings" aria-label="打开模型设置" title="模型与设置（⌘/Ctrl + ,）" onClick={() => setSettingsOpen(true)} />

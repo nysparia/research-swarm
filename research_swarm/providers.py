@@ -5,6 +5,8 @@ import copy
 import contextvars
 from contextlib import contextmanager
 import json
+import hashlib
+import http.client
 import os
 import re
 import sqlite3
@@ -13,9 +15,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from datetime import datetime
 
 from .search_settings import KEY_ENVS, PROFILES, normalize_search, update_search
 from . import concept_search
+from .provider_recovery import ModelConnectionError, ModelRequestCancelled, ProviderRecovery, WaitBudget, retry_after, timestamp
 
 
 class ModelOutputError(ValueError):
@@ -24,10 +28,6 @@ class ModelOutputError(ValueError):
 
 class ModelOutputTruncated(ModelOutputError):
     """A completion reached its configured output budget."""
-
-
-class ModelConnectionError(RuntimeError):
-    """A temporary transport failure, never an authentication failure."""
 
 
 class ModelAuthenticationError(RuntimeError):
@@ -67,6 +67,10 @@ class Settings:
         self.lock = threading.RLock()
         self.usage_path = Path(state_dir) / 'provider-usage.sqlite'
         self._usage_context = contextvars.ContextVar('provider_usage_context', default=(None, None))
+        self._request_context = contextvars.ContextVar('provider_request_context', default={})
+        self._request_provider = contextvars.ContextVar('provider_request_snapshot', default=None)
+        self.recovery = ProviderRecovery()
+        self._shutdown = threading.Event()
         self.data = {'mode': 'evidence', 'provider': {'type': 'openai', 'baseUrl': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'apiKey': '', 'apiKeyEnv': 'DEEPSEEK_API_KEY'}}
         if self.source and (self.source / 'config.json').is_file():
             cfg = json.loads((self.source / 'config.json').read_text(encoding='utf-8-sig'))
@@ -380,6 +384,21 @@ class Settings:
         finally:
             self._usage_context.reset(token)
 
+    @contextmanager
+    def request_context(self, *, cancelled=None, on_wait=None, on_request=None, not_before=None):
+        context = dict(self._request_context.get())
+        context.update({k: v for k, v in {'cancelled': cancelled, 'on_wait': on_wait, 'on_request': on_request, 'not_before': not_before}.items() if v is not None})
+        token = self._request_context.set(context)
+        try:
+            yield
+        finally:
+            self._request_context.reset(token)
+
+    def close(self):
+        self._shutdown.set()
+        with self.recovery.condition:
+            self.recovery.condition.notify_all()
+
     def _usage_database(self):
         self.usage_path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.usage_path, timeout=30)
@@ -427,6 +446,9 @@ class Settings:
         with self.lock:
             secrets = {key for provider in self.data['providers'].values()
                        for key in (self._key(provider), provider.get('apiKey', ''), os.getenv(provider.get('apiKeyEnv', ''), '')) if key}
+            snapshot = self._request_provider.get()
+            if snapshot and snapshot[1]:
+                secrets.add(snapshot[1])
             secrets.update(key for key in self.search_credentials().values() if key)
             secrets.update(key for key in (self.concept_search_credential(), self.data.get('conceptSearch', {}).get('apiKey'), os.getenv('TAVILY_API_KEY', '')) if key)
             for key in sorted(secrets, key=len, reverse=True):
@@ -454,31 +476,75 @@ class Settings:
 
     def chat(self, messages: list[dict], max_tokens: int = 5500, *, json_mode=False, on_retry=None, role='main') -> str:
         self._validate_role(role)
+        with self.lock:
+            provider = copy.deepcopy(self._effective_provider(role))
+            credential = self._key(provider)
+        account = (self._identity(provider)['baseUrl'], hashlib.sha256(credential.encode()).digest())
+        token = self._request_provider.set((provider, credential))
+        try:
+            return self._recover_chat(messages, max_tokens, json_mode, on_retry, role, account)
+        finally:
+            self._request_provider.reset(token)
+
+    def _recover_chat(self, messages, max_tokens, json_mode, on_retry, role, account):
         messages = copy.deepcopy(messages)
-        repaired_output, retried_connection = False, False
-        # A transport retry must not spend the one JSON-format repair (or vice versa).
-        # Each failure class gets one retry, for at most three requests in total.
-        for attempt in range(3 if json_mode else 1):
+        repaired_output, retries = False, 0
+        context = self._request_context.get()
+        current_cancelled = context.get('cancelled', lambda: False)
+        cancelled = lambda: self._shutdown.is_set() or current_cancelled()
+        notify = context.get('on_wait', lambda _: None)
+        budget, not_before, reason, retry_message = WaitBudget(), 0., '', None
+        if context.get('not_before'):
             try:
-                text = self._chat_once(messages, max_tokens, json_mode=json_mode, role=role)
-                if json_mode:
-                    parse_json_object(text)
-                return text
-            except ModelOutputError as exc:
-                if not json_mode or repaired_output:
-                    raise
-                repaired_output = True
-                if on_retry:
-                    on_retry('模型响应格式不完整，正在自动重试 1/1；尚未写入研究结果。')
-                if isinstance(exc, ModelOutputTruncated):
-                    max_tokens = min(16000, max_tokens * 2)
-                messages.append({'role': 'user', 'content': '上一响应没有形成可解析的 JSON 对象。请按原定结构重新输出，压缩长文本，最多 8 条 claims；只返回一个完整 JSON 对象，不含代码围栏、说明前缀或其他文本。不要为了格式捏造证据。'})
-            except ModelConnectionError:
-                if not json_mode or retried_connection:
-                    raise
-                retried_connection = True
-                if on_retry:
-                    on_retry('模型连接暂时失败，正在重试 1/1；已完成节点保持不变。')
+                remaining = datetime.fromisoformat(context['not_before'].replace('Z', '+00:00')).timestamp() - self.recovery.wall_time()
+                not_before = self.recovery.clock() + max(0., remaining)
+            except (ValueError, TypeError, AttributeError):
+                pass
+        try:
+            for attempt in range(5):
+                ticket = self.recovery.acquire(account, not_before, budget, cancelled, notify, retries, reason)
+                success = False
+                try:
+                    if cancelled():
+                        raise ModelRequestCancelled('节点已暂停或失效，停止模型请求')
+                    # This callback charges v2's budget, exactly once per actual retry.
+                    if retry_message and on_retry:
+                        on_retry(retry_message)
+                    notify(None)
+                    if context.get('on_request'):
+                        context['on_request']()
+                    if cancelled():
+                        raise ModelRequestCancelled('节点已暂停或失效，停止模型请求')
+                    text = self._chat_once(messages, max_tokens, json_mode=json_mode, role=role)
+                    if json_mode:
+                        parse_json_object(text)
+                    success = True
+                    return text
+                except ModelOutputError as exc:
+                    success = True  # The transport recovered; format repair is a separate budget.
+                    if not json_mode or repaired_output:
+                        raise
+                    repaired_output = True
+                    retry_message = '模型响应格式不完整，正在自动重试 1/1；尚未写入研究结果。'
+                    if isinstance(exc, ModelOutputTruncated):
+                        max_tokens = min(16000, max_tokens * 2)
+                    messages.append({'role': 'user', 'content': '上一响应没有形成可解析的 JSON 对象。请按原定结构重新输出，压缩长文本，最多 8 条 claims；只返回一个完整 JSON 对象，不含代码围栏、说明前缀或其他文本。不要为了格式捏造证据。'})
+                except ModelConnectionError as exc:
+                    delay = max(self.recovery.delay(retries), exc.retry_after_seconds or 0)
+                    not_before = self.recovery.clock() + delay
+                    exc.next_retry_at = timestamp(self.recovery.wall_time() + delay)
+                    if exc.status_code in (429, 503) or exc.retry_after_seconds is not None:
+                        self.recovery.defer(account, delay, exc)
+                    if retries >= 3 or attempt == 4:
+                        exc.exhausted = True
+                        raise
+                    retries += 1
+                    reason = self.safe_error(exc)
+                    retry_message = f'模型服务临时不可用，正在重试 {retries}/3；已完成工作保持不变。'
+                finally:
+                    self.recovery.release(account, ticket, success)
+        finally:
+            notify(None)
 
     def _chat_once(self, messages: list[dict], max_tokens: int, *, json_mode=False, role='main') -> str:
         telemetry = {}
@@ -498,7 +564,7 @@ class Settings:
             if len(raw) > 8192:
                 return ''
             detail = json.loads(raw.decode('utf-8'))
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             return ''
         finally:
             error.close()
@@ -516,9 +582,13 @@ class Settings:
 
     def _request_once(self, messages, max_tokens, *, json_mode=False, role='main', telemetry):
         self._validate_role(role)
-        with self.lock:
-            p = copy.deepcopy(self._effective_provider(role))
-            key = self._key(p)
+        snapshot = self._request_provider.get()
+        if snapshot is None:
+            with self.lock:
+                p = copy.deepcopy(self._effective_provider(role))
+                key = self._key(p)
+        else:
+            p, key = snapshot
         if not p.get('model') or not p.get('baseUrl'):
             raise ValueError(f'未配置{self.ROLE_NAMES[role]}模型（{role}）；请在运行设置中单独配置，不能自动使用主研究模型代替')
         local = urllib.parse.urlparse(p['baseUrl']).hostname in ('127.0.0.1', 'localhost', '::1')
@@ -547,15 +617,17 @@ class Settings:
                 result = json.loads(raw.decode('utf-8'))
                 telemetry['usage'] = result.get('usage')
         except urllib.error.HTTPError as exc:
+            retry_seconds = retry_after(exc.headers.get('Retry-After')) if exc.headers else None
             detail = self._http_error_detail(exc)
             if exc.code == 401:
                 raise ModelAuthenticationError(
                     '模型接口返回 HTTP 401' + (detail or '；请检查地址、模型和额度'), exc.code, role
                 ) from None
             if exc.code in (408, 429, 500, 502, 503, 504):
-                raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），可稍后继续' + detail) from None
+                raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），请稍后重试节点' + detail,
+                                           exc.code, retry_seconds) from None
             raise RuntimeError(f'模型接口返回 HTTP {exc.code}' + (detail or '；请检查地址、模型和额度')) from None
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, http.client.RemoteDisconnected) as exc:
             raise ModelConnectionError('模型连接失败或超时：' + self.safe_error(exc)) from None
         if p['type'] == 'anthropic':
             text = ''.join(part.get('text', '') for part in result.get('content', []) if part.get('type') == 'text')

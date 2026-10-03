@@ -8,6 +8,8 @@ import type { VisualNode } from './graphData';
 import { Markdown } from './Markdown';
 import { BlurText } from './BlurReveal';
 import { failureReason } from './researchStatus';
+import { retryNodeRequest, nodeExecutionLabel } from './workbench/executionState';
+import { ModelWaitNotice } from './workbench/ModelWaitNotice';
 import { TaskNodeActionModal } from './TaskNodeActionModal';
 import { ResponsibilityConfirmation } from './ResponsibilityConfirmation';
 import { claimConfirmationLabel, claimReviewLabel, type responsibilityPayload } from './reviewState';
@@ -59,7 +61,7 @@ export function TaskNodeDrawer({ target, detail, onClose, onPaper, accept }: { t
     api<{ runs?: Record<string, unknown>[]; executions?: Record<string, unknown>[] }>(taskPath(detail.task.id, `/nodes/${encodeURIComponent(node.id)}/history`)).then(value => { if (active) setRuns(value.runs || value.executions || []); }).catch(error => { if (active) setHistoryError(messageOf(error)); }).finally(() => { if (active) setHistoryLoading(false); });
     return () => { active = false; };
   }, [node?.id, node?.version, node?.finishedAt, tab, detail.task.id]);
-  const retry = async () => { if (!node) return; setBusy(true); try { accept(await api<TaskDetail>(taskPath(detail.task.id, '/actions/retry'), { nodeId: node.id })); } catch (error) { void message.error(messageOf(error)); } finally { setBusy(false); } };
+  const retry = async () => { if (!node) return; setBusy(true); try { accept(await api<TaskDetail>(taskPath(detail.task.id, '/actions/retry'), retryNodeRequest(node))); } catch (error) { void message.error(messageOf(error)); } finally { setBusy(false); } };
   const confirmClaim = async (signature: ReturnType<typeof responsibilityPayload>) => { if (!claimConfirmation) return; setBusy(true); try { accept(await api<TaskDetail>(taskPath(detail.task.id, '/actions/claim-decision'), { claimId: claimConfirmation.claimId, decision: 'confirm', expectedRevision: claimConfirmation.revision, note: '', ...signature })); setClaimConfirmation(null); void message.success('已记录对当前主张版本的责任签名'); } catch (error) { void message.error(messageOf(error)); } finally { setBusy(false); } };
   const ids = new Set([...(node?.evidenceIds || []), ...(node?.output?.evidenceIds || []), ...(node?.output?.claims?.flatMap(claim => claim.evidenceIds) || [])]);
   const tabs: TabsProps['items'] = node && state ? [
@@ -94,9 +96,10 @@ export function TaskNodeDrawer({ target, detail, onClose, onPaper, accept }: { t
   return <>
     <Drawer open={Boolean(target)} title="研究节点" size={640} onClose={onClose} rootClassName="task-drawer sw-drawer">
       {target && state && <>
+        {node?.status === 'running' && node.modelWait && <ModelWaitNotice wait={node.modelWait} />}
         {node?.status === 'failed' && <Alert type="error" showIcon title="节点执行失败" description={<BlurText text={failureReason(node)} />} />}
         {node?.kind === 'experiment' && ['missing_input', 'needs_execution'].includes(String(node.output?.structured?.status)) && <Alert type="warning" showIcon title="实验尚未执行" description="当前只有设计或缺失输入说明，没有本机实测结果。" />}
-        <div className="node-detail-heading"><span><BlurText kind="status" text={claim ? `主张 v${claim.version} · ${node ? statusText[node.status] : '待执行'}` : node ? `${statusText[node.status]} · ${phaseText[node.phase] || node.phase} · v${node.version}` : facet?.facetName || (selectedEvidence ? '证据' : '研究切面')} /></span><h2><BlurText text={claim?.statement || node?.title || facet?.title || target.title} /></h2><p><BlurText text={node?.role || target.action} /></p></div>
+        <div className="node-detail-heading"><span><BlurText kind="status" text={claim ? `主张 v${claim.version} · ${node ? (nodeExecutionLabel(node) || statusText[node.status]) : '待执行'}` : node ? `${(nodeExecutionLabel(node) || statusText[node.status])} · ${phaseText[node.phase] || node.phase} · v${node.version}` : facet?.facetName || (selectedEvidence ? '证据' : '研究切面')} /></span><h2><BlurText text={claim?.statement || node?.title || facet?.title || target.title} /></h2><p><BlurText text={node?.role || target.action} /></p></div>
         {node && <div className="node-detail-actions">
           <Button icon={<SearchOutlined />} type="primary" onClick={() => setActionKind('deepen')}>从这里深入研究</Button>
           {claim && !claim.archived && !claim.assessment?.confirmedByUser && claim.assessment?.status && claim.assessment.status !== 'unassessed' && <Button onClick={() => setClaimConfirmation({ claimId: claim.id, version: claim.version, revision: state.revision })}>签名确认当前判断</Button>}

@@ -44,7 +44,8 @@ export interface ClaimRelation { id: string; claimId: string; claimVersion: numb
 export interface ClaimExpression { id: string; kind: 'paper' | 'reproduction_report'; title: string; markdown: string; claimRefs: { claimId: string; version: number }[]; status: 'draft' | 'confirmed'; createdAt?: string }
 export interface ClaimGraph { schemaVersion: number; claims: CanonicalClaim[]; relations: ClaimRelation[]; expressions: ClaimExpression[]; materials: Record<string, unknown>[] }
 export interface ResearchNode {
-  error?: { code?: string; message: string; at?: string; phase?: string; retryable?: boolean } | null;
+  error?: { code?: string; message: string; at?: string; phase?: string; retryable?: boolean; statusCode?: number; retryExhausted?: boolean; nextRetryAt?: string | null } | null;
+  modelWait?: ModelWait | null;
   id: string;
   parentId: string | null;
   title: string;
@@ -120,8 +121,9 @@ export interface Checkpoint {
   responsibilityAcknowledged?: boolean;
 }
 export interface Snapshot {
+  executionSummary?: ExecutionSummary;
   revision: number;
-  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; taskMode?: 'research' | 'reproduction'; researchDecision?: { id: string; question: string; options: { label: string; effect: string }[] } | null };
+  project: { id: string; title: string; description: string; round: number; sourcePath: string; mode: 'evidence' | 'llm'; taskMode?: 'research' | 'reproduction'; researchDecision?: { id: string; question: string; options: { label: string; effect: string }[] } | null; researchCycle?: ResearchCycle | null };
   stage: number;
   paused: boolean;
   status: 'idle' | 'running' | 'waiting_user' | 'failed' | 'completed';
@@ -139,6 +141,11 @@ export interface Snapshot {
   history: Record<string, unknown>[];
   operations?: { id: string; type: string; nodeId?: string; message: string; status: 'running' | 'completed' | 'failed'; startedAt: string; finishedAt?: string; error?: string; retrieval?: LiteratureRetrievalSummary }[];
 }
+export interface ModelWait { reason: string; retryNumber: number; maxRetries: number; nextRetryAt: string | null; statusCode?: number | null; kind: 'cooldown' | 'probe' }
+export interface ExecutionSummary { status: 'running' | 'waiting_provider' | 'partially_blocked' | 'blocked' | 'paused' | 'waiting_user' | 'completed'; running: number; waitingProvider: number; failed: number; blocked: number; ready: number; completed: number }
+export interface TopicCandidate { id: string; title: string; question: string; researchGap: string; rationale: string; evidenceIds: string[]; minimalStudy: string; feasibility: string; limitations: string }
+export interface TopicSelection { id: string; status: 'pending' | 'selected'; mode?: 'candidate' | 'custom' | 'edited' | 'direct' | 'delegated'; candidateId?: string; sourceCandidateIds?: string[]; selectedTopic?: { title: string; question: string; rationale: string; evidenceIds: string[] }; reason?: string }
+export interface ResearchCycle { stage?: string; status?: string; topicCandidates?: TopicCandidate[]; topicSelection?: TopicSelection | null; topic?: { title: string; question: string; rationale: string; evidenceIds: string[] } | null; }
 export interface Impact { revision: number; affectedIds: string[]; downstreamCount: number }
 export type ProviderRole = 'main' | 'judge' | 'redteam';
 export interface ProviderSettings {

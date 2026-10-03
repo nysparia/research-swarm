@@ -207,18 +207,14 @@ class ReviewRoutingTests(unittest.TestCase):
                 self.assertEqual({args['path'] for _, args in artifacts.calls}, set(paths))
                 self.assertTrue(all(name == 'artifact_read' for name, _ in artifacts.calls))
 
-    def test_redteam_outage_preserves_artifacts_and_returns_nondecisive_result(self):
+    def test_redteam_outage_preserves_artifacts_and_remains_retryable(self):
         node, context, _, paths = redteam_fixture()
         original = copy.deepcopy(context)
         settings = ScriptedRoleSettings(self.root, [ModelConnectionError('temporary outage')])
         artifacts = RecordedArtifacts()
-        result = ResearchRunner(settings, self.root, local_tools=artifacts)(node, context, lambda _: None)
+        with self.assertRaises(ModelConnectionError):
+            ResearchRunner(settings, self.root, local_tools=artifacts)(node, context, lambda _: None)
         self.assertEqual([call['role'] for call in settings.calls], ['redteam'])
-        self.assertFalse(result['structured']['experimentReview']['valid'])
-        self.assertTrue(result['structured']['experimentReview']['blocked'])
-        self.assertEqual(result['structured']['review']['status'], 'unavailable')
-        self.assertFalse(result['structured']['review']['independent'])
-        self.assertFalse(result['claims'])
         self.assertEqual({args['path'] for _, args in artifacts.calls}, set(paths))
         self.assertEqual(context, original)
 
