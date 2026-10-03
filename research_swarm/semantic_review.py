@@ -136,6 +136,10 @@ def review_claim(settings, node, context, log):
 只返回 JSON: {"hypothesisVerdict":{"status":"supported/refuted/inconclusive","reason":"简明依据","limitations":"边界","evidenceIds":[]},"evidenceRelations":[{"evidenceId":"实际ID","type":"support","polarity":"for/against/mixed/unresolved","reason":"语义依据","applicability":"范围","quality":"usable/limited/unusable","quote":"逐字原文片段","locator":"输入原定位符","rule":"direct_statement/verified_measurement","confidence":0.0}]}。
 direct_statement 只用于正文直接陈述；verified_measurement 须有宿主已核验的实验。论文报告值不是复现成功。没有合格关系必须 inconclusive。
 不得省略反证；置信度不是准确率或科学验证。只给简短理由，不输出隐藏推理。'''
+    from .output_protocol import relation_prompt
+    from .model_diagnostics import record_validation
+    binding = {key: payload['claim'][key] for key in ('id', 'version')}
+    system += relation_prompt(binding)
     try:
         raw = settings.chat([{'role': 'system', 'content': system},
                              {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
@@ -144,10 +148,11 @@ direct_statement 只用于正文直接陈述；verified_measurement 须有宿主
         from .claim_runtime import validate_relations
         known = {e['id']: e for e in payload['evidence']}
         relations = value.get('evidenceRelations', [])
-        validate_relations(relations, set(known))
+        validate_relations(relations, set(known), binding)
         verdict = value.get('hypothesisVerdict', {})
         from .research_cycle import validate_output
         validate_output('hypothesis', 'aggregate', {'hypothesisVerdict': verdict}, set(known))
+        record_validation(settings)
         gaps = []
         omitted = set(known) - {r['evidenceId'] for r in relations}
         if omitted:
@@ -175,6 +180,7 @@ direct_statement 只用于正文直接陈述；verified_measurement 须有宿主
                 'claims': [], 'structured': {'hypothesisVerdict': verdict, 'evidenceRelations': relations, 'review': review},
                 'unresolved': list(dict.fromkeys(gaps))}
     except Exception as exc:
+        record_validation(settings, exc)
         # Provider or review failure preserves the evidence and explicitly loses decisiveness.
         message = '独立裁判调用或输出校验失败；保留证据，等待重新复核。'
         log(message + ' ' + settings.safe_error(exc))

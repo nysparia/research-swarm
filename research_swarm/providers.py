@@ -46,6 +46,7 @@ def parse_json_object(text: str) -> dict:
 
 
 class Settings:
+    USER_AGENT = 'ResearchSwarm/0.2.0'
     DEEPSEEK_URL = 'https://api.deepseek.com'
     ROLES = ('main', 'judge', 'redteam')
     ROLE_NAMES = {'main': '主研究', 'judge': '证据裁判', 'redteam': '对抗复核'}
@@ -481,6 +482,29 @@ class Settings:
         self._record_usage(role, telemetry.get('usage'), False)
         return value
 
+    def _http_error_detail(self, error):
+        """Extract bounded, redacted diagnostics without forwarding HTML error pages."""
+        try:
+            raw = error.read(8193)
+            if len(raw) > 8192:
+                return ''
+            detail = json.loads(raw.decode('utf-8'))
+        except (OSError, ValueError):
+            return ''
+        finally:
+            error.close()
+        if not isinstance(detail, dict):
+            return ''
+        if error.code == 403 and detail.get('cloudflare_error') is True and str(detail.get('error_code')) == '1010':
+            return '；Cloudflare 1010：服务网关拒绝当前客户端请求标识（User-Agent），请联系服务方检查访问规则'
+        nested = detail.get('error')
+        message = nested.get('message') if isinstance(nested, dict) else nested
+        if not isinstance(message, str) or not message.strip():
+            message = detail.get('message') or detail.get('detail')
+        if not isinstance(message, str) or not message.strip():
+            return ''
+        return '；服务详情：' + self.safe_error(Exception(message))
+
     def _request_once(self, messages, max_tokens, *, json_mode=False, role='main', telemetry):
         self._validate_role(role)
         with self.lock:
@@ -491,7 +515,7 @@ class Settings:
         local = urllib.parse.urlparse(p['baseUrl']).hostname in ('127.0.0.1', 'localhost', '::1')
         if not key and not local:
             raise ValueError(f'未配置{self.ROLE_NAMES[role]}模型密钥，请在运行设置中填写；或切换为已有数据核验')
-        headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': self.USER_AGENT}
         if p['type'] == 'anthropic':
             body = {'model': p['model'], 'max_tokens': max_tokens, 'temperature': 0.2, 'system': '\n\n'.join(m['content'] for m in messages if m['role'] == 'system'), 'messages': [m for m in messages if m['role'] != 'system']}
             headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
@@ -514,9 +538,10 @@ class Settings:
                 result = json.loads(raw.decode('utf-8'))
                 telemetry['usage'] = result.get('usage')
         except urllib.error.HTTPError as exc:
+            detail = self._http_error_detail(exc)
             if exc.code in (408, 429, 500, 502, 503, 504):
-                raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），可稍后继续') from None
-            raise RuntimeError(f'模型接口返回 HTTP {exc.code}；请检查地址、模型和额度') from None
+                raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），可稍后继续' + detail) from None
+            raise RuntimeError(f'模型接口返回 HTTP {exc.code}' + (detail or '；请检查地址、模型和额度')) from None
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ModelConnectionError('模型连接失败或超时：' + self.safe_error(exc)) from None
         if p['type'] == 'anthropic':

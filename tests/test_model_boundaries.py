@@ -40,8 +40,10 @@ def context_with_papers(count=1, evidence_per_paper=1):
 class ModelBoundaryTests(unittest.TestCase):
     def run_model(self, provider, *, phase="execute", context=None, read_pdf=None, logs=None):
         node = {"id": "leaf", "phase": phase, "input": {}}
-        # The model runner writes no artifacts; this path is never accessed.
-        runner = ResearchRunner(provider, Path("__unused_boundary_artifacts__"), read_pdf=read_pdf)
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        runner = ResearchRunner(provider, Path(directory.name), read_pdf=read_pdf)
         return runner(node, context or context_with_papers(), (logs if logs is not None else []).append)
 
     def test_null_arrays_get_one_structural_correction(self):

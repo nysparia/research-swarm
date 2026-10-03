@@ -194,6 +194,12 @@ class Engine:
                            if entry.get('type') == 'execution-failed' and (node_id is None or entry.get('nodeId') == node_id))
             records.extend(copy.deepcopy(entry) for entry in self._state['history']
                            if entry.get('type') == 'tool-executed' and (node_id is None or entry.get('nodeId') == node_id))
+            diagnostics = {entry['executionToken']: entry for entry in self._state['history']
+                           if entry.get('type') == 'model-diagnostics'}
+            for record in records:
+                diagnostic = diagnostics.get(record.get('executionToken', record['id']))
+                if diagnostic:
+                    record.update({key: copy.deepcopy(diagnostic[key]) for key in ('diagnosticRef', 'attemptCount', 'validationErrors')})
             return sorted(records, key=lambda item: item.get('at', ''))
 
     def export_audit(self):
@@ -1310,6 +1316,15 @@ class Engine:
                 self._local_tokens.pop(token['id'], None)
             self._condition.notify_all()
 
+    def _record_diagnostic(self, token, diagnostic):
+        with self._condition:
+            if self._closed:
+                return
+            token['diagnostic'] = copy.deepcopy(diagnostic)
+            self._history('model-diagnostics', nodeId=token['nodeId'], version=token['version'],
+                          executionToken=token['id'], **copy.deepcopy(diagnostic))
+            self._commit()
+
     def _worker(self):
         while True:
             with self._condition:
@@ -1333,6 +1348,7 @@ class Engine:
                     raise ValueError("尚未配置研究执行器，无法执行任务；请配置后重试")
                 context['cancelled'] = lambda token=token: not self._current(token)
                 context['executionToken'] = token['id']
+                context['record_diagnostic'] = lambda result, token=token: self._record_diagnostic(token, result)
                 context['record_execution'] = lambda result, token=token: self._record_execution(token, result)
                 context['record_artifact_read'] = lambda result, token=token: self._record_artifact_read(token, result)
                 context['record_execution_started'] = lambda result, token=token: self._record_execution_started(token, result)
@@ -1368,7 +1384,8 @@ class Engine:
                         self._history("execution-failed", nodeId=current["id"], version=current["version"],
                                       input=token.get("input", {}), context=token.get("context", {}), error=str(error),
                                       executionToken=token['id'], executions=copy.deepcopy(token.get('toolExecutions', [])),
-                                      phase=token['phase'], errorType=type(error).__name__, trace=traceback.format_exc()[-6000:])
+                                      phase=token['phase'], errorType=type(error).__name__, trace=traceback.format_exc()[-6000:],
+                                      **copy.deepcopy(token.get('diagnostic', {})))
                         from .research_cycle import report_failure
                         report_failure(self, current, token, error)
                         self._commit()
@@ -1397,10 +1414,8 @@ class Engine:
                     raise ValueError("实验凭据 ID 已存在且内容不同")
             known.add(evidence["id"])
         result["evidenceIds"] = _unique(result.get("evidenceIds", []))
-        from .research_contracts import validate_structured_result
-        validate_structured_result(result.get('structured', {}), known)
-        from .claim_runtime import validate_relations
-        validate_relations(result.get('structured', {}).get('evidenceRelations', []), known)
+        from .output_protocol import validate_node_output
+        validate_node_output(result, known, node)
         if set(result["evidenceIds"]) - known:
             raise ValueError("研究结果引用了未知证据 ID")
         claims = []

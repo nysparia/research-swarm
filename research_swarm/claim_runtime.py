@@ -11,28 +11,7 @@ from .claims import (ensure_graph, get_claim, create_claim, add_relation,
                      assess_claim, create_expression, revise_claim)
 
 
-def validate_relations(items, known):
-    if not isinstance(items, list) or len(items) > 100:
-        raise ValueError('evidenceRelations 必须是最多 100 项的列表')
-    directions = {}
-    for item in items:
-        if not isinstance(item, dict) or item.get('evidenceId') not in known:
-            raise ValueError('证据关系必须引用实际 evidenceId')
-        if item.get('type') not in ('support', 'qualify'):
-            raise ValueError('证据关系只支持 support 或 qualify')
-        if item.get('polarity', 'unresolved') not in ('for', 'against', 'mixed', 'unresolved'):
-            raise ValueError('support 方向必须为 for/against/mixed/unresolved')
-        if item['type'] == 'qualify' and item.get('polarity', 'unresolved') != 'unresolved':
-            raise ValueError('qualify 记录适用条件，不使用正反方向')
-        if item.get('quality', 'limited') not in ('usable', 'limited', 'unusable'):
-            raise ValueError('证据质量必须为 usable/limited/unusable')
-        if not isinstance(item.get('reason'), str) or not item['reason'].strip():
-            raise ValueError('证据关系必须说明本证据与主张的关系')
-        if item['type'] == 'support' and item.get('polarity', 'unresolved') != 'unresolved':
-            key = item['evidenceId']
-            if key in directions and directions[key] != item['polarity']:
-                raise ValueError('同一证据不能双向挂载；请重审并使用一个 mixed 关系解释冲突')
-            directions[key] = item['polarity']
+from .output_protocol import validate_relations
 
 
 def bind_hypothesis(engine, item, hypothesis_id, parent_claim_ids=None):
@@ -98,7 +77,7 @@ def output_relations(state, node, output, phase):
         raise ValueError('主张已修订，拒绝将旧版本的任务结果写入新版本')
     evidence = {e['id']: e for e in state['evidence']}
     explicit = output.get('structured', {}).get('evidenceRelations', [])
-    validate_relations(explicit, set(evidence))
+    validate_relations(explicit, set(evidence), {'id': claim_id, 'version': claim['version']})
     review = output.get('structured', {}).get('review', {})
     from .semantic_review import relation_gaps, review_admitted
     reviewed = review_admitted(review, 'judge')

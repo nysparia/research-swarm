@@ -272,6 +272,89 @@ class ProviderTests(unittest.TestCase):
                     settings.chat([{'role':'user','content':'Return JSON'}], json_mode=True)
             self.assertEqual(request.call_count, 1)
 
+    def test_application_identity_preserves_protocol_and_deepseek_parameters(self):
+        cases = [('openai', 'https://api.openai-next.com/v1', 'deepseek-v4-1-flash-260910'),
+                 ('openai', 'https://api.deepseek.com', 'deepseek-flash'),
+                 ('anthropic', 'https://example.com/v1', 'claude-model')]
+        for protocol, base, model in cases:
+            with self.subTest(protocol=protocol, base=base), tempfile.TemporaryDirectory() as temp:
+                settings = Settings(Path(temp), None)
+                settings.update({'provider': {'type': protocol, 'baseUrl': base, 'model': model, 'apiKey': 'test-key'}})
+                response = {'content': [{'type': 'text', 'text': 'OK'}]} if protocol == 'anthropic' else {'choices': [{'message': {'content': 'OK'}}]}
+                with patch('urllib.request.urlopen', return_value=io.BytesIO(json.dumps(response).encode())) as send:
+                    self.assertEqual(settings.chat([{'role': 'user', 'content': 'Reply only: OK'}], max_tokens=32), 'OK')
+                request = send.call_args.args[0]
+                self.assertEqual(request.get_header('User-agent'), 'ResearchSwarm/0.2.0')
+                body = json.loads(request.data)
+                self.assertEqual(body['model'], model)
+                self.assertEqual(body['max_tokens'], 32)
+                if protocol == 'anthropic':
+                    self.assertEqual(request.full_url, base + '/messages')
+                    self.assertEqual(request.get_header('X-api-key'), 'test-key')
+                    self.assertEqual(request.get_header('Anthropic-version'), '2023-06-01')
+                else:
+                    self.assertEqual(request.full_url, base + '/chat/completions')
+                    self.assertEqual(request.get_header('Authorization'), 'Bearer test-key')
+                    if base == 'https://api.deepseek.com':
+                        self.assertEqual(body['thinking'], {'type': 'disabled'})
+                    else:
+                        self.assertNotIn('thinking', body)
+
+    def test_cloudflare_signature_denial_is_explained_without_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            body = io.BytesIO(json.dumps({'cloudflare_error': True, 'error_code': 1010,
+                                         'detail': 'blocked test-key'}).encode())
+            failure = urllib.error.HTTPError('https://example.com', 403, 'Forbidden', {}, body)
+            with patch('urllib.request.urlopen', side_effect=failure) as send:
+                with self.assertRaisesRegex(RuntimeError, 'Cloudflare 1010.*User-Agent') as raised:
+                    settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True)
+            self.assertNotIn('test-key', str(raised.exception))
+            self.assertEqual(send.call_count, 1)
+            self.assertTrue(body.closed)
+
+    def test_provider_error_details_are_redacted_for_both_protocol_shapes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'secret-for-test'
+            for payload in ({'error': {'message': 'Unknown model; secret-for-test'}},
+                            {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Unknown model; secret-for-test'}},
+                            {'detail': 'Unknown model; secret-for-test'}):
+                with self.subTest(payload=payload):
+                    failure = urllib.error.HTTPError('https://example.com', 400, 'Bad Request', {}, io.BytesIO(json.dumps(payload).encode()))
+                    with patch('urllib.request.urlopen', side_effect=failure):
+                        with self.assertRaisesRegex(RuntimeError, 'HTTP 400.*Unknown model') as raised:
+                            settings.chat([{'role': 'user', 'content': 'test'}])
+                    self.assertNotIn('secret-for-test', str(raised.exception))
+
+    def test_unusable_error_bodies_keep_http_fallback_and_bound_reads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            for raw in (b'<html>gateway error</html>', b'', b'[]', b'null', b'\xff',
+                        json.dumps({'error': {'message': 'x' * 9000}}).encode()):
+                with self.subTest(raw_length=len(raw)):
+                    body = io.BytesIO(raw)
+                    failure = urllib.error.HTTPError('https://example.com', 403, 'Forbidden', {}, body)
+                    with patch.object(failure, 'read', wraps=failure.read) as read, patch('urllib.request.urlopen', side_effect=failure):
+                        with self.assertRaisesRegex(RuntimeError, 'HTTP 403；请检查地址、模型和额度'):
+                            settings.chat([{'role': 'user', 'content': 'test'}])
+                    read.assert_called_once_with(8193)
+                    self.assertTrue(body.closed)
+
+    def test_http_transient_diagnostics_preserve_bounded_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(Path(temp), None)
+            settings.data['provider']['apiKey'] = 'test-key'
+            failures = [urllib.error.HTTPError('https://example.com', 503, 'Unavailable', {},
+                        io.BytesIO(b'{"error":{"message":"upstream busy test-key"}}')) for _ in range(2)]
+            with patch('urllib.request.urlopen', side_effect=failures) as send:
+                with self.assertRaisesRegex(RuntimeError, 'HTTP 503.*upstream busy') as raised:
+                    settings.chat([{'role': 'user', 'content': 'Return JSON'}], json_mode=True)
+            self.assertNotIn('test-key', str(raised.exception))
+            self.assertEqual(send.call_count, 2)
+
     def test_truncation_retry_expands_budget_but_remains_bounded(self):
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(Path(temp), None)
