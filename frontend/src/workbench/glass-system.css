@@ -1,0 +1,180 @@
+/* Unified desktop shell. The user's reference sets the page rhythm:
+   quiet grayscale navigation, open reading space, bottom floating composer.
+   Apple UI Kit Over-glass controls inform the shared chrome family.
+   Native refraction is deliberately replaced with frosted CSS material. */
+:root {
+  --glass-ink:#383d45; --glass-muted:#737982;
+  --glass-face:rgb(255 255 255 / var(--sw-glass-alpha,.59));
+  --glass-edge:#ffffffcf; --glass-seam:#242b3912;
+  --glass-shadow:0 4px 14px #34415912,0 1px 3px #3441590c,inset 0 1px 0 #fff;
+}
+body { background:#e7e9ee; }
+.sw-macos { background:rgb(246 247 250 / .54); border-color:#ffffffd9; border-radius:22px; box-shadow:0 18px 56px #26344c1a,0 2px 8px #26344c0e; }
+.sw-window-backdrop { position:absolute; inset:0; z-index:-1; overflow:hidden; background:linear-gradient(135deg,#dce3ed,#f2f3f6 48%,#dae0e9); pointer-events:none; }
+.sw-window-backdrop i { position:absolute; width:600px; height:850px; border-radius:48%; transform:rotate(-35deg); background:linear-gradient(120deg,#97a9c475,#ecf0f880); box-shadow:inset -3px 0 0 #ffffff90,35px 10px 60px #b4bed24d; filter:blur(11px); left:-360px; top:10%; }
+.sw-window-backdrop i+i { left:auto; top:auto; right:-330px; bottom:-430px; width:800px; height:1000px; background:linear-gradient(100deg,#e1e6ed,#b5c2d259); box-shadow:inset 4px 0 0 #ffffff90; }
+.sw-macos .sw-main { background:rgb(255 255 255 / .82); backdrop-filter:blur(28px); -webkit-backdrop-filter:blur(28px); }
+.sw-macos .sw-shell-header { height:58px; min-height:58px; padding:0 23px; background:transparent; border-bottom:0; }
+.sw-macos .sw-shell-title h2 { font-size:14px; color:#383d45; }
+.sw-macos .sw-title-stack>span { color:#92969d; font-size:10px; }
+.sw-macos .sw-main:has(.sw-entry) .sw-title-stack { visibility:hidden; }
+.sw-macos .sw-icon { width:17px; height:17px; stroke-width:1.7; }
+
+/* All sidebar actions and task rows share one rhythm, without icon tiles or
+   individually elevated cards. The whole rail is the frosted surface. */
+.sw-macos .sw-sidebar.sw-navigation { background:rgb(244 246 250 / var(--sw-glass-alpha)); backdrop-filter:blur(32px) saturate(1.1); -webkit-backdrop-filter:blur(32px) saturate(1.1); border-right:1px solid #ffffffa8; box-shadow:inset -1px 0 0 #4e5d7110; }
+.sw-macos.has-sidebar .sw-sidebar.sw-navigation { width:246px; padding:0 12px; }
+.sw-macos .sw-navigation .sw-sidebar-top { padding:11px 7px; height:62px; }
+.sw-macos .sw-navigation .sw-sidebar-brand { gap:9px; }
+.sw-macos .sw-navigation .sw-sidebar-brand strong { font-size:15px; color:#41454b; font-weight:600; }
+.sw-macos .sw-navigation .sw-sidebar-brand .sw-mark { color:#606b7e; background:transparent; border:0; box-shadow:none; width:24px; height:24px; border-radius:0; }
+.sw-macos .sw-navigation .sw-sidebar-brand .sw-mark svg { width:26px; height:26px; }
+.sw-macos .sw-navigation .sw-sidebar-top>.sw-button { width:28px; height:28px; min-height:28px; padding:5px; color:#7d828b; }
+.sw-macos .sw-navigation .sw-navigation-row { width:100%; justify-content:flex-start; min-height:36px; height:36px; gap:10px; padding:8px 9px; margin:1px 0; font-size:13px; line-height:20px; font-weight:400; color:#494e56; border:0; border-radius:8px; background:transparent; box-shadow:none; }
+.sw-macos .sw-navigation .sw-navigation-row .sw-icon { width:17px; height:17px; color:#777e88; }
+.sw-macos .sw-navigation .sw-navigation-row:hover:not(:disabled) { background:#ffffff70; color:#232830; box-shadow:none; }
+.sw-macos .sw-navigation .sw-navigation-row:disabled { opacity:.38; }
+.sw-macos .sw-navigation .sw-side-tools { margin:13px 0 21px; gap:0; }
+.sw-macos .sw-navigation .sw-sidebar-section { height:21px; padding:0 9px; margin-bottom:6px; font-size:11px; font-weight:500; color:#92979f; }
+.sw-macos .sw-navigation .sw-task { min-height:36px; height:36px; margin:1px 0; padding:8px 10px; font-size:13px; line-height:20px; color:#595e67; border:1px solid transparent; border-radius:8px; }
+.sw-macos .sw-navigation .sw-task.active { color:#303640; background:rgb(255 255 255 / .68); border-color:#ffffffc7; box-shadow:0 1px 5px #33455e09,inset 0 1px 0 #fff; }
+.sw-macos .sw-navigation .sw-task:hover:not(:disabled):not(.active) { background:#ffffff48; }
+.sw-macos .sw-navigation .sw-task-live { width:4px; height:4px; background:#7292b5; }
+.sw-macos .sw-navigation>footer { margin-top:8px; padding:10px 0; border:0; }
+.sw-macos .sw-navigation .sw-model-link>span:first-of-type { font-size:13px; font-weight:400; }
+.sw-macos .sw-navigation .sw-model-link>.sw-icon:last-child { width:11px; height:11px; color:#989da5; margin-left:2px; }
+.sw-connection-dot { flex:0 0 5px!important; width:5px; height:5px; border-radius:50%; background:#b9bec7; margin-left:auto; }
+.sw-connection-dot.is-ready { background:#789f8d; }
+.sw-macos .sw-navigation .sw-search { height:32px; margin:7px 3px; padding:5px 9px; border-radius:9px; border:1px solid #ffffffb8; background:#ffffff80; box-shadow:inset 0 1px 2px #54647b12; }
+.sw-macos .sw-navigation .sw-search>.sw-icon { width:14px; height:14px; color:#8b939f; }
+
+/* Shared action and segmented families; no separate chips for report tabs. */
+.sw-glass-group { display:inline-flex; align-items:center; gap:2px; padding:3px; border-radius:99px; border:1px solid var(--glass-edge); background:var(--glass-face); box-shadow:var(--glass-shadow); backdrop-filter:blur(24px) saturate(1.2); -webkit-backdrop-filter:blur(24px) saturate(1.2); }
+.sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group { padding:3px; gap:2px; margin-left:10px; border:1px solid var(--glass-edge); background:var(--glass-face); box-shadow:var(--glass-shadow); }
+body .sw-glass-action.sw-button { min-height:30px; height:30px; padding:5px 12px; gap:7px; border:0; border-radius:99px; background:transparent; color:var(--glass-ink); font-size:12px; line-height:20px; box-shadow:none; }
+body .sw-glass-action.sw-button.is-icon { width:30px; min-width:30px; padding:6px; }
+body .sw-glass-action.sw-button:hover:not(:disabled) { background:#ffffffaa; color:#20262f; }
+body .sw-glass-action.sw-button:active:not(:disabled) { transform:scale(.96); background:#dfe4ec8c; }
+.sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-button { width:30px; height:30px; min-height:30px; padding:6px; border-radius:99px; color:#69717c; background:transparent; }
+.sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-button[aria-pressed=true] { background:#ffffffc9; color:#384657; box-shadow:0 1px 3px #44557212; }
+.sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-button:hover:not(:disabled) { background:#ffffffa0; }
+.sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-button .sw-icon { width:17px; height:17px; }
+.sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments { display:grid; grid-template-columns:repeat(var(--sw-segment-count),minmax(max-content,1fr)); height:36px; min-width:0; width:max-content; padding:3px; border:1px solid var(--glass-edge); border-radius:99px; background:rgb(223 228 236 / .44); box-shadow:inset 0 1px 0 #fff9,0 1px 4px #33455e09; backdrop-filter:blur(24px) saturate(1.2); -webkit-backdrop-filter:blur(24px) saturate(1.2); }
+.sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments button { min-height:28px; height:28px; width:auto; padding:4px 13px; gap:6px; border-radius:99px; color:#747d88; font-size:12px; line-height:20px; white-space:nowrap; }
+.sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments button[aria-pressed=true] { color:#384350; }
+.sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments .sw-icon { width:15px; height:15px; color:currentColor; }
+.sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments .sw-segment-thumb { top:3px; bottom:3px; left:3px; width:calc((100% - 6px) / var(--sw-segment-count)); border:1px solid #fff; border-radius:99px; background:#ffffffb5; box-shadow:0 2px 5px #3a486814,inset 0 1px 0 #fff; }
+
+/* Open entry surface with a quiet central prompt and a bottom input dock. */
+.sw-macos .sw-entry { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:0; padding:0 36px 23px; background:transparent; overflow:auto; }
+.sw-entry-welcome { flex:1; min-height:180px; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; padding:20px 0 50px; }
+.sw-macos .sw-entry-welcome .sw-mark-large { width:48px; height:48px; margin:0 0 24px; color:#a0a4ad; background:transparent; border:0; border-radius:0; box-shadow:none; }
+.sw-macos .sw-entry-welcome .sw-mark-large svg { width:46px; height:46px; }
+.sw-macos .sw-entry h1 { color:#36383e; font-size:29px; line-height:1.4; font-weight:500; letter-spacing:-.035em; }
+.sw-entry-dock { flex:0 0 auto; width:min(100%,780px); margin:0 auto; }
+.sw-macos .sw-entry-input { width:100%; animation:none; }
+.sw-macos .sw-entry-input-meta { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 14px -9px; padding:11px 14px 17px; background:rgb(237 240 245 / .6); border:1px solid #ffffffb8; border-radius:17px 17px 0 0; box-shadow:inset 0 1px 0 #fff; backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); font-size:11px; color:#858c96; }
+.sw-entry-input-meta>span,.sw-entry-input-meta>button { display:flex; align-items:center; gap:6px; }
+.sw-entry-input-meta>button { padding:0; border:0; background:none; color:#6d7681; font:inherit; cursor:pointer; }
+.sw-entry-input-meta>button .sw-icon:last-child { width:10px; height:10px; }
+.sw-macos .sw-composer { border:1px solid #ffffffeb; border-radius:24px; background:rgb(255 255 255 / .75); box-shadow:0 7px 28px #34415912,0 0 0 1px #8b96a518,inset 0 1px 0 #fff; backdrop-filter:blur(26px) saturate(1.3); -webkit-backdrop-filter:blur(26px) saturate(1.3); }
+.sw-macos .sw-composer:focus-within { border-color:#ffffff; box-shadow:0 8px 30px #34415917,0 0 0 1px #7f92ad42,inset 0 1px 0 #fff; }
+.sw-macos .sw-composer.centered { min-height:112px; padding:15px 17px 12px; }
+.sw-macos .sw-composer textarea { color:#40444c; }
+.sw-macos .sw-composer textarea::placeholder { color:#989ca4; }
+.sw-entry-dock-footer { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:12px 5px 0; }
+.sw-macos .sw-suggestions { justify-content:flex-start; flex-wrap:wrap; gap:6px; margin:0; }
+.sw-macos .sw-suggestions button { font-size:10px; gap:5px; padding:4px 7px; border:0; border-radius:6px; box-shadow:none; background:transparent; color:#949aa3; }
+.sw-macos .sw-suggestions button:hover { background:#e7eaf166; color:#4f5b6c; }
+.sw-macos .sw-suggestions .sw-icon { width:13px; height:13px; }
+.sw-keyboard-hint { color:#a1a6af; font-size:9px; white-space:nowrap; }
+.sw-macos .sw-entry-footnote { position:static; display:block; text-align:center; margin:14px 0 0; font-size:9px; color:#a2a6ae; }
+
+/* Glass stays on navigation/controls. Reading surfaces stay bright and calm. */
+.sw-macos .sw-dialogue { background:rgb(255 255 255 / .84); }
+.sw-macos .sw-dialogue-header { min-height:50px; color:#727b88; background:transparent; }
+.sw-dialogue-header>span:last-child { color:#a0a6af; }
+.sw-macos .sw-dialogue-scroll { padding-bottom:var(--sw-dock-height,146px); }
+.sw-macos .sw-dialogue-compose { position:absolute; left:0; right:0; bottom:0; z-index:7; margin:0 auto; padding:12px 21px 19px; background:linear-gradient(transparent,#ffffffa8 86%); pointer-events:none; }
+.sw-macos .sw-dialogue-compose>* { pointer-events:auto; }
+.sw-macos .sw-message-user { background:#eff0f3; color:#454b55; }
+.sw-macos .sw-assistant-label { color:#9298a2; font-weight:400; }
+.sw-macos .sw-assistant-label .sw-icon { color:#8b96a5; }
+.sw-macos .sw-visual-workspace { background:rgb(235 239 245 / .45); backdrop-filter:blur(30px); -webkit-backdrop-filter:blur(30px); }
+.sw-macos .sw-workspace-toolbar { min-height:56px; padding:10px 15px; border:0; background:transparent; }
+.sw-macos .sw-workspace-hint { color:#9aa2ad; font-size:10px; }
+.sw-macos .sa-structure { background-color:transparent; background-image:radial-gradient(#8291a915 .6px,transparent .6px); }
+.sw-macos .sa-agent-card { background:#ffffffed; border-color:#d9e0e9; box-shadow:0 4px 14px #3c4d6610; }
+.sw-macos .sa-agent-card>header { background:#f7f9fbb0; }
+.sw-macos .sw-agent-glyph { color:#728194; background:#eef1f6; border-color:#dfe5ef; }
+.sw-macos .sw-agent-glyph-1,.sw-macos .sw-agent-glyph-2 { color:#728194; background:#eef1f6; border-color:#dfe5ef; }
+.sw-macos .sa-locator,.sw-macos .sa-map-controls,.sw-macos .sa-zoom-controls { background:var(--glass-face); border:1px solid var(--glass-edge); box-shadow:var(--glass-shadow); backdrop-filter:blur(26px); -webkit-backdrop-filter:blur(26px); }
+.sw-macos .sw-prep-document { background:rgb(255 255 255 / .92); }
+.sw-macos .sw-prep-document>header,.sw-macos .sw-prep-document>footer { background:rgb(245 247 250 / .66); }
+.sw-macos .sw-pane-divider { background:#7180991a; }
+.sw-macos .sw-outputs { background:transparent; }
+.sw-macos .sw-output-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:4px 15px 17px; min-height:60px; border:0; background:transparent; }
+.sw-macos .sw-output-files { padding:0; gap:0; min-width:0; max-width:100%; overflow-x:auto; }
+.sw-macos .sw-output-actions { gap:1px; margin-left:auto; }
+.sw-macos .sw-output-scroll { padding:0 20px 28px; }
+.sw-macos .sw-output-paper { padding:30px 34px 44px; border:1px solid #fff; border-radius:14px; background:rgb(255 255 255 / .94); box-shadow:0 4px 20px #3a4b6610; }
+.sw-macos .sw-output-paper-meta { margin-bottom:24px; }
+.sw-macos .sw-output-paper-meta .sw-badge { color:#8b939f; background:#f3f5f8; }
+.sw-macos .sw-output-paper .markdown-content h1 { font-size:23px; color:#323944; }
+.sw-glass-symbol { display:inline-grid; place-items:center; flex:0 0 auto; width:32px; height:32px; border:1px solid #fff; border-radius:10px; color:#737d8a; background:#ffffffb5; box-shadow:0 2px 6px #3545600d,inset 0 1px 0 #fff; }
+.sw-glass-symbol .sw-icon { width:19px; height:19px; }
+.sw-model-settings .sw-model-brand { gap:11px; }
+.sw-model-settings .sw-model-brand strong { color:#4d535d; font-weight:500; }
+
+/* Portaled sheets use the same material, with enough opacity for readable text. */
+.sw-model-settings .ant-modal-container,.sw-model-settings .ant-modal-content { background:rgb(248 249 252 / .78); border-color:#ffffffe8; box-shadow:0 24px 70px #26334e26,0 1px 5px #26334e10,inset 0 1px 0 #fff; backdrop-filter:blur(38px) saturate(1.15); -webkit-backdrop-filter:blur(38px) saturate(1.15); }
+.sw-model-settings .sw-settings-group { background:#ffffff5e; border:1px solid #ffffff9c; }
+.sw-appearance-popover .ant-popover-container,.sw-appearance-popover .ant-popover-inner,.ant-dropdown .ant-dropdown-menu { background:rgb(248 249 252 / .76); border-color:#ffffffe8; box-shadow:0 14px 40px #26334e26,0 0 0 1px #35445d15,inset 0 1px 0 #fff; backdrop-filter:blur(30px) saturate(1.1); -webkit-backdrop-filter:blur(30px) saturate(1.1); }
+.sw-drawer .ant-drawer-content { background:rgb(248 249 252 / .87); backdrop-filter:blur(36px) saturate(1.1); -webkit-backdrop-filter:blur(36px) saturate(1.1); }
+body:has(.sw-macos) .ant-modal-mask { background:rgb(40 48 63 / .18); backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px); }
+.sw-macos[data-reduce-transparency=true] .sw-window-backdrop { display:none; }
+.sw-macos[data-reduce-transparency=true] :is(.sw-navigation,.sw-glass-group,.sw-composer,.sw-glass-segments,.sw-entry-input-meta) { background:#f6f7f9!important; backdrop-filter:none!important; -webkit-backdrop-filter:none!important; }
+body:has(.sw-macos[data-reduce-transparency=true]) :is(.ant-modal-container,.ant-modal-content,.ant-drawer-content,.ant-popover-container,.ant-popover-inner,.ant-dropdown-menu) { background:#f8f9fb; backdrop-filter:none; -webkit-backdrop-filter:none; }
+
+@media(max-width:1179px) {
+ .sw-macos.has-sidebar .sw-sidebar.sw-navigation { width:246px; background:rgb(241 244 249 / .85); backdrop-filter:blur(36px); -webkit-backdrop-filter:blur(36px); }
+ .sw-macos .sw-workspace-hint { display:none; }
+}
+@media(max-width:759px) {
+ .sw-macos { border-radius:0; }
+ .sw-macos .sw-shell-header { height:56px; min-height:56px; padding:0 13px; }
+ .sw-macos .sw-entry { padding:0 17px 18px; }
+ .sw-entry-welcome { min-height:170px; padding:8px 0 40px; }
+ .sw-macos .sw-entry h1 { font-size:25px; }
+ .sw-macos .sw-entry-welcome .sw-mark-large { margin-bottom:18px; }
+ .sw-entry-dock { width:100%; }
+ .sw-macos .sw-entry-input-meta { margin:0 8px -8px; padding:10px 10px 16px; font-size:10px; }
+ .sw-macos .sw-entry-input-meta>span { display:flex; }
+ .sw-keyboard-hint { display:none; }
+ .sw-entry-dock-footer { padding-top:10px; }
+ .sw-macos .sw-suggestions { gap:3px; }
+ .sw-macos .sw-suggestions button { font-size:9px; padding:4px 3px; }
+ .sw-macos .sw-entry-footnote { font-size:8px; margin-top:11px; }
+ .sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group { margin-left:3px; padding:2px; gap:0; }
+ .sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-button { width:27px; height:28px; min-height:28px; padding:5px; }
+ .sw-macos .sw-shell-actions .sw-toolbar-group.sw-glass-group .sw-mobile-work-toggle { width:auto; padding:4px 7px; font-size:11px; }
+ .sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments { height:34px; }
+ .sw-macos .sw-native-segments.sw-kit-segments.sw-glass-segments button { height:26px; min-height:26px; font-size:11px; padding:3px 10px; }
+ .sw-macos .sw-output-header { padding:0 12px 13px; gap:9px; }
+ .sw-macos .sw-output-actions { margin-left:0; }
+ .sw-macos .sw-output-scroll { padding:0 12px 20px; }
+ .sw-macos .sw-output-paper { padding:24px 22px 32px; }
+ .sw-macos .sw-dialogue-compose { padding:10px 15px max(16px,env(safe-area-inset-bottom)); }
+}
+@media(max-height:620px) {
+ .sw-entry-welcome { flex:0 0 auto; min-height:130px; padding:5px 0 18px; }
+ .sw-macos .sw-entry-welcome .sw-mark-large { width:32px; height:32px; margin-bottom:10px; }
+ .sw-entry-dock { margin-top:auto; }
+}
+@media(prefers-reduced-motion:reduce) { .sw-glass-action,.sw-glass-segments .sw-segment-thumb { transition:none!important; } }
+
+.sw-entry-welcome { animation:sw-entry-in 420ms var(--sw-ease) both; }
+.sw-macos .sw-dialogue:has(.sw-research-choice) .sw-dialogue-scroll { padding-bottom:0; }
+.sw-macos .sw-research-choice { margin-bottom:var(--sw-dock-height,146px); flex-shrink:0; background:#ffffffc9; }
+
+.sw-macos .sw-return-latest { bottom:calc(var(--sw-dock-height,146px) + 10px); }

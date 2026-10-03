@@ -1,0 +1,117 @@
+/* Image-calibrated macOS UI Kit controls.
+ * Source: Apple macOS 27 UI Kit > Components > Light.
+ * https://www.sketch.com/s/57153a31-3379-4737-8ac6-dbfd6525f052/symbols
+ * Documented component dimensions: regular button / field / segment 24px;
+ * large content control 28px; medium sidebar row 32px; regular switch 54x24.
+ * Label widths adapt to Chinese content. Colors/radii are visual approximations.
+ * Native lensing intentionally replaced by backdrop-filter frosted materials.
+ */
+:root { --mac-control:24px; --mac-control-lg:28px; --mac-radius:6px; --mac-field:#fff; --mac-secondary:#dedede; --mac-selection:#dedee1; --mac-accent:#0088ff; }
+body .sw-button { min-height:var(--mac-control); padding:3px 10px; border-radius:var(--mac-radius); font-size:13px; line-height:18px; font-weight:400; }
+body .sw-button-primary { border:0; background:var(--mac-accent); color:#fff; box-shadow:none; }
+body .sw-button-primary:hover:not(:disabled) { background:#007ef0; }
+body .sw-button-primary:active:not(:disabled) { background:#0063d9; transform:none; }
+body .sw-button-outline { border:0; background:#dedede; color:#292929; box-shadow:none; }
+body .sw-button-outline:hover:not(:disabled) { background:#d1d1d1; }
+body .sw-button:active:not(:disabled) { transform:translateY(.5px); }
+body .sw-button:disabled { opacity:.38; }
+body .sw-button:focus-visible { outline:3px solid #0088ff66; outline-offset:2px; }
+.sw-macos .sw-prep-document>footer .sw-button-primary { min-height:28px; border-radius:14px; padding:5px 14px; background:var(--mac-accent); box-shadow:none; }
+.sw-modal .sw-modal-footer .sw-button { min-height:28px; border-radius:14px; padding:5px 13px; }
+.sw-macos .sw-message-tools .sw-button { padding:3px; }
+
+/* Medium sidebar: 256 outer / 240 row, flat selection, blue symbol + dark label. */
+.sw-macos.has-sidebar .sw-sidebar { width:256px; padding:0 8px; }
+.sw-macos .sw-sidebar { background:rgb(237 238 240 / var(--sw-glass-alpha)); }
+.sw-macos .sw-sidebar-top { height:58px; padding:10px 12px; }
+.sw-macos .sw-sidebar-brand { gap:8px; }
+.sw-macos .sw-sidebar-brand strong { font-size:13px; }
+.sw-macos .sw-sidebar-brand .sw-mark { width:26px; height:26px; border-radius:7px; }
+.sw-macos .sw-sidebar-brand .sw-mark svg { width:24px; height:24px; }
+.sw-macos .sw-new-task,.sw-macos .sw-side-action,.sw-macos .sw-side-tools .sw-button { min-height:32px; padding:6px 12px; border:0; border-radius:6px; background:transparent; box-shadow:none; color:#29292c; font-size:13px; }
+.sw-macos .sw-new-task>.sw-icon { color:#0088ff; }
+.sw-macos .sw-new-task:hover:not(:disabled),.sw-macos .sw-side-action:hover:not(:disabled) { background:#d6d6da65; box-shadow:none; }
+.sw-macos .sw-side-action { margin-top:3px; }
+.sw-macos .sw-side-tools { margin:14px 0 20px; gap:0; }
+.sw-macos .sw-sidebar-section { height:18px; font-size:11px; line-height:18px; color:#838386; padding:0 12px; margin-bottom:5px; }
+.sw-macos .sw-task { min-height:32px; height:32px; padding:5px 11px; margin:1px 0; border:0; border-radius:6px; color:#27272a; font-size:13px; }
+.sw-macos .sw-task>.sw-icon { color:#0088ff; width:16px; height:16px; }
+.sw-macos .sw-task.active { color:#202024; background:#d8d8dcaa; border:0; box-shadow:none; }
+.sw-macos .sw-task:hover:not(:disabled):not(.active) { background:#dedee36b; }
+.sw-macos .sw-sidebar>footer { padding:8px 4px; border-color:#97979d22; }
+.sw-macos .sw-search { height:24px; border-radius:6px; padding:1px 7px; margin:7px 10px; border:1px solid #0000001a; background:#fff; box-shadow:inset 0 1px 1px #00000004; }
+.sw-macos .sw-search:focus-within { border-color:#5db5ff; box-shadow:0 0 0 3px #0088ff55; }
+.sw-macos .sw-search input { font-size:12px; }
+
+/* Content-area segmented control, not a large floating toolbar capsule. */
+.sw-macos .sw-native-segments.sw-kit-segments { display:grid; grid-template-columns:repeat(var(--sw-segment-count),minmax(0,1fr)); height:24px; min-width:190px; padding:2px; gap:0; border:0; border-radius:6px; background:#dedee1; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; }
+.sw-macos .sw-native-segments.sw-kit-segments button { position:relative; width:auto; min-height:20px; height:20px; padding:1px 11px; gap:5px; border-radius:4px; font-size:11px; line-height:18px; color:#47474b; }
+.sw-macos .sw-native-segments.sw-kit-segments button[aria-pressed=true] { color:#202023; }
+.sw-macos .sw-native-segments.sw-kit-segments .sw-icon { width:13px; height:13px; }
+.sw-macos .sw-native-segments.sw-kit-segments .sw-segment-thumb { top:2px; bottom:2px; left:2px; width:calc((100% - 4px) / var(--sw-segment-count)); border-radius:4px; background:#fff; box-shadow:0 1px 3px #00000014; transform:translateX(calc(var(--sw-segment-index) * 100%)); transition:transform 200ms var(--sw-ease); }
+.sw-macos .sw-workspace-toolbar { min-height:44px; padding:10px 16px; }
+.sw-macos .sw-dialogue-header { min-height:44px; }
+.sw-macos .sw-shell-header { height:58px; min-height:58px; }
+.sw-macos .sw-shell-title h2 { font-size:14px; }
+.sw-macos .sw-shell-actions .sw-toolbar-group { padding:3px; gap:0; background:rgb(244 244 246 / var(--sw-glass-alpha)); border-color:#ffffffd9; box-shadow:0 1px 5px #00000012,inset 0 1px 0 #fff; }
+.sw-macos .sw-shell-actions .sw-toolbar-group .sw-button { width:24px; height:24px; min-height:24px; padding:4px; border-radius:5px; }
+.sw-macos .sw-shell-actions .sw-toolbar-group .sw-button .sw-icon { width:16px; height:16px; }
+.sw-macos .sw-shell-actions .sw-toolbar-group .sw-button[aria-pressed=true] { background:#d1d3d87d; color:#242428; }
+
+/* Fields: white inset body, rounded rectangle, clearly visible blue focus ring. */
+.sw-modal .sw-field :is(input,select),.sw-drawer .sw-field :is(input,select) { height:24px; min-height:24px; font-size:13px; line-height:18px; padding:2px 7px; border:1px solid #0000001b; border-radius:6px; color:#28282b; background:#fff; box-shadow:inset 0 1px 1px #00000004; }
+.sw-modal .sw-field :is(input,select):disabled,.sw-drawer .sw-field :is(input,select):disabled { color:#99999d; background:#f8f8f9; }
+.sw-modal .sw-field :is(input,select):focus,.sw-drawer .sw-field :is(input,select):focus { outline:3px solid #0088ff70; outline-offset:1px; border-color:#68b7f7; }
+.sw-model-settings .ant-modal-title { font-size:14px; color:#242428; }
+.sw-model-settings .ant-modal-container,.sw-model-settings .ant-modal-content { padding:22px; border-radius:16px; background:rgb(247 247 249 / .94); }
+.sw-model-settings .sw-model-brand { padding:0 0 18px; margin:0; background:transparent; border:0; border-radius:0; gap:10px; }
+.sw-model-settings .sw-model-brand>.sw-icon { width:32px; height:32px; padding:6px; color:#fff; background:#0088ff; border-radius:8px; }
+.sw-model-settings .sw-model-brand strong { font-size:13px; color:#303036; }
+.sw-model-settings .sw-model-brand>div span { color:#7b7b82; font-size:11px; }
+.sw-model-settings .sw-model-brand .sw-badge { padding:0; font-size:11px; background:transparent; }
+.sw-settings-group { background:#ededf0; border:1px solid #e7e7ea; border-radius:10px; padding:0 12px; }
+.sw-model-settings .sw-settings-row { display:flex; flex-direction:row; justify-content:space-between; align-items:center; gap:16px; min-height:44px; margin:0; padding:10px 0; border-bottom:1px solid #d5d5db66; font-size:12px; color:#313136; }
+.sw-model-settings .sw-settings-row:last-child { border-bottom:0; }
+.sw-model-settings .sw-settings-row>span { flex:0 0 74px; }
+.sw-model-settings .sw-settings-row :is(input,select) { margin:0; max-width:285px; flex:1; min-width:0; width:100%; }
+.sw-model-settings .sw-settings-help { margin:13px 3px 0; font-size:11px; line-height:1.7; color:#74747c; }
+.sw-model-settings .sw-modal-footer { margin-top:20px; padding-top:0; border:0; gap:8px; }
+
+/* Mac switch: the thumb is a capsule, not the circular iOS-style thumb. */
+.sw-kit-switch-row input.sw-kit-switch { display:block; flex:0 0 54px; width:54px; height:24px; min-height:24px; appearance:none; padding:2px; margin:0; border:0; border-radius:99px; background:#d6d6d8; cursor:pointer; }
+.sw-kit-switch-row input.sw-kit-switch:before { width:32px; height:20px; border-radius:99px; background:#fff; box-shadow:0 1px 2px #00000008; transform:none; transition:transform 180ms var(--sw-ease); }
+.sw-kit-switch-row input.sw-kit-switch:checked { background:#0088ff; }
+.sw-kit-switch-row input.sw-kit-switch:checked:before { transform:translateX(18px); }
+.sw-kit-switch-row input.sw-kit-switch:active:before { box-shadow:0 0 0 2px #ffffff6b,0 2px 7px #00000022; }
+.sw-kit-switch-row input.sw-kit-switch:focus-visible { outline:3px solid #0088ff66; outline-offset:3px; }
+
+/* Library menu examples: frosted body, tight rows, blue rounded hover selection. */
+.ant-dropdown .ant-dropdown-menu { min-width:194px; padding:5px; border:1px solid #fff9; border-radius:10px; background:rgb(242 242 246 / .84); backdrop-filter:blur(24px) saturate(1.3); -webkit-backdrop-filter:blur(24px) saturate(1.3); box-shadow:0 10px 30px #00000025,0 0 0 1px #00000010,inset 0 1px 0 #fff; }
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item { min-height:24px; padding:3px 9px; font-size:13px; line-height:18px; border-radius:12px; color:#252528; }
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item:not(.ant-dropdown-menu-item-disabled):hover,
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-active:not(.ant-dropdown-menu-item-disabled) { color:#fff; background:#006aff; }
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item-disabled { color:#98989e; }
+.ant-dropdown .ant-dropdown-menu-item-divider { background:#a8a8b04d; margin:5px 4px; }
+.sw-appearance-popover .ant-popover-container,.sw-appearance-popover .ant-popover-inner { border-radius:12px; border:1px solid #ffffffc9; background:rgb(245 245 248 / .9); box-shadow:0 12px 36px #00000022,0 0 0 1px #00000016,inset 0 1px 0 #fff; backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); }
+.sw-appearance { padding:18px; width:300px; }
+.sw-appearance header strong { font-size:14px; }
+.sw-appearance .sw-glass-sample { height:66px; border-radius:8px; }
+.sw-appearance .sw-transparency-toggle { padding:12px 0; background:transparent; border-radius:0; border-top:1px solid #b1b1b630; }
+body:has(.sw-macos[data-reduce-transparency=true]) :is(.ant-dropdown-menu,.sw-appearance-popover .ant-popover-container,.sw-appearance-popover .ant-popover-inner) { background:#f5f5f7; backdrop-filter:none; -webkit-backdrop-filter:none; }
+@media(max-width:759px) {
+ .sw-macos .sw-shell-header { height:58px; min-height:58px; }
+ .sw-macos .sw-shell-actions .sw-toolbar-group .sw-mobile-work-toggle { width:auto; height:28px; padding:4px 8px; }
+ .sw-macos .sw-shell-actions .sw-toolbar-group .sw-button { min-height:28px; }
+ .sw-macos .sw-native-segments.sw-kit-segments { height:28px; }
+ .sw-macos .sw-native-segments.sw-kit-segments button { height:24px; }
+ .sw-model-settings .sw-settings-row { gap:8px; }
+ .sw-model-settings .sw-settings-row>span { flex-basis:65px; }
+}
+@media(pointer:coarse) {
+ .sw-macos .sw-button { min-height:34px; }
+ .sw-macos .sw-task { min-height:40px; height:40px; }
+ .sw-kit-switch-row { min-height:44px; }
+}
+@media(prefers-reduced-motion:reduce) {
+ .sw-kit-switch-row input.sw-kit-switch:before,.sw-macos .sw-native-segments.sw-kit-segments .sw-segment-thumb { transition:none; }
+}

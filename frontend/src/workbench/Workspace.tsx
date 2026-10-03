@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { App as AntdApp, Drawer, Dropdown, Modal } from 'antd';
 import { api, messageOf, taskPath, useTaskWorkspace } from '../taskApi';
 import { useDocumentDraft } from '../useDocumentDraft';
@@ -21,6 +21,12 @@ import { Checkpoint } from './Checkpoint';
 import { AgentStructure } from './AgentStructure';
 import { ConversationPane } from './ConversationPane';
 import { ResearchOutputs } from './ResearchOutputs';
+import { PaneDivider } from './PaneDivider';
+import { DEFAULT_PANE_PERCENT } from './splitPaneState';
+import { TaskNavigation } from './TaskNavigation';
+import { GlassButton, GlassGroup, WindowBackdrop } from './GlassChrome';
+import { AppearanceControl } from './AppearanceControl';
+import { EntrySurface, WorkspaceTabs } from './WorkspaceChrome';
 import { contextForNode, contextIsCurrent, overviewArtifact, type ResearchContext } from './conversationState';
 
 interface ConversationDraft { text: string; context: ResearchContext | null; intent: 'ask' | 'deepen' | 'next_round' }
@@ -28,6 +34,9 @@ interface ConversationDraft { text: string; context: ResearchContext | null; int
 export function Workspace() {
   const workspace = useTaskWorkspace(); const { detail } = workspace; const editor = useDocumentDraft(detail, workspace.accept);
   const { modal } = AntdApp.useApp();
+  const [panePercent, setPanePercent] = useState(DEFAULT_PANE_PERCENT);
+  const [glassTint, setGlassTint] = useState(35);
+  const [reduceTransparency, setReduceTransparency] = useState(() => window.matchMedia('(prefers-reduced-transparency: reduce)').matches);
   const [settings, setSettings] = useState<Settings | null>(null); const [settingsOpen, setSettingsOpen] = useState(false);
   const [composer, setComposer] = useState(''); const drafts = useRef(new Map<string, ConversationDraft>()); const composerTask = useRef(workspace.selectedId || 'new'); const composerRef = useRef(composer); composerRef.current = composer;
   const [busy, setBusy] = useState(''); const [error, setError] = useState('');
@@ -53,6 +62,31 @@ export function Workspace() {
     setSelectedNode(null); setSelectedPaper(null); setSelectedArtifact(null); setReview(null); setMaterialsOpen(attachAfterCreate.current === id); attachAfterCreate.current = null; setHistoryOpen(false); setHistoric(null); setError(''); setNotebookEditorOpen(false); setTool(''); setSmallWork(false);
     if (window.innerWidth < 1180) setSidebar(false);
   }, [workspace.selectedId]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const overlay = Array.from(document.querySelectorAll<HTMLElement>('.ant-modal-wrap, .ant-drawer-open, .ant-popover')).some(el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+      if (overlay) return;
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !(event.target as Element).closest('.cm-editor')) {
+        if (event.key.toLowerCase() === 'k') { event.preventDefault(); setSmallWork(false); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[aria-label="与研究助手对话"]')?.focus()); }
+        else if (event.key === ',') { event.preventDefault(); setSettingsOpen(true); }
+        else if (event.key === '\\') { event.preventDefault(); setSidebar(current => !current); }
+      }
+      if (sidebar && window.innerWidth < 1180) {
+        if (event.key === 'Escape') { setSidebar(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="展开侧边栏"]')?.focus()); }
+        if (event.key === 'Tab') {
+          const controls = Array.from(document.querySelectorAll<HTMLElement>('.sw-sidebar button:not(:disabled), .sw-sidebar input')).filter(el => el.getClientRects().length > 0);
+          const first = controls[0], last = controls.at(-1), active = document.activeElement;
+          if (first && last && (event.shiftKey ? active === first || !controls.includes(active as HTMLElement) : active === last || !controls.includes(active as HTMLElement))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+  }, [sidebar]);
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1180px)');
+    const adapt = (event: MediaQueryListEvent) => setSidebar(event.matches);
+    media.addEventListener('change', adapt); return () => media.removeEventListener('change', adapt);
+  }, []);
   useEffect(() => { document.title = detail?.task.title ? `${detail.task.title} · 科研蜂群` : '科研蜂群'; }, [detail?.task.title]);
   useEffect(() => { setWorkspaceView(detail?.phase === 'completed' ? 'outputs' : 'structure'); }, [detail?.task.id, detail?.phase]);
   const guarded = async (name: string, work: () => Promise<void>) => { if (actionLock.current) return; actionLock.current = true; setBusy(name); setError(''); const id = workspace.selectedId; try { await work(); } catch (e) { if (selectedId.current === id || name === 'message' || name === 'create') setError(messageOf(e)); } finally { actionLock.current = false; if (mounted.current) setBusy(''); } };
@@ -123,29 +157,32 @@ export function Workspace() {
   const composerElement = <Composer value={composer} onChange={setComposer} onSend={() => { void send(); }} busy={busy === 'message'} onAttach={() => setMaterialsOpen(true)} placeholder={intent === 'next_round' ? '下一轮，你想继续研究什么？' : context ? (context.nodeId ? '继续讨论这个节点…' : '继续讨论这份内容…') : '继续讨论…'} context={context ? <><button className="sw-context-target" title="查看引用内容" onClick={() => setSelectedArtifact(context.artifact)} type="button"><Icon name="link" /><span>{context.nodeId ? detail?.state?.nodes.find(n => n.id === context.nodeId)?.title || context.artifact.title : context.artifact.title}</span><span>v{context.artifact.revision}</span></button><Button type="button" icon="close" aria-label="取消节点引用" onClick={() => { setContext(null); setIntent('ask'); }} />{!contextCurrent && <div className="sw-context-update">内容已更新 <button type="button" onClick={() => { const artifact = detail?.workbench?.artifacts.find(a => a.id === context.artifact.id); if (artifact) setContext({ ...context, artifact }); }}>使用最新版本</button></div>}</> : intent === 'next_round' ? <><span>下一轮研究</span><Button type="button" icon="close" aria-label="取消下一轮研究" onClick={() => setIntent('ask')} /></> : undefined} controls={context?.nodeId && <select aria-label="对话操作" value={intent} onChange={e => setIntent(e.target.value as 'ask' | 'deepen')}><option value="ask">讨论</option><option value="deepen">深入研究</option></select>} />;
   const conversation = detail && <ConversationPane detail={detail} composer={composerElement} sending={!!busy && ['message', 'decision'].includes(busy)} onProposal={setReview} onRetry={item => { void retryInteraction(item); }} onDecision={choice => { void decide(choice); }} />;
 
-  return <div className={`sw-workspace sw-production ${sidebar ? 'has-sidebar' : ''} ${workOpen ? 'has-workspace' : ''} ${smallWork ? 'mobile-workspace' : ''} ${preparing ? 'is-preparing' : ''}`}>
+
+  return <div className={`sw-workspace sw-production sw-macos ${sidebar ? 'has-sidebar' : ''} ${workOpen ? 'has-workspace' : ''} ${smallWork ? 'mobile-workspace' : ''} ${preparing ? 'is-preparing' : ''}`} data-reduce-transparency={reduceTransparency} style={{ '--sw-conversation-width': `${panePercent}%`, '--sw-glass-alpha': .42 + glassTint * .0048, '--sw-glass-blur': `${18 + glassTint * .12}px` } as CSSProperties}>
+    <WindowBackdrop />
     {sidebar && <button className="sw-nav-scrim" aria-label="关闭任务导航" onClick={() => setSidebar(false)} />}
-    <aside className="sw-sidebar"><header className="sw-sidebar-top"><strong>研究</strong><Button icon="panel" aria-label="收起侧边栏" onClick={() => setSidebar(false)} /></header>
-      <Button className="sw-new-task" icon="plus" disabled={!!busy} onClick={() => { void switchTask(null); }}>新建科研任务</Button>
-      <Button className="sw-side-action" icon="search" onClick={() => setSearching(!searching)}>搜索任务</Button>
-      {searching && <label className="sw-search"><input autoFocus aria-label="搜索科研任务" placeholder="搜索任务" value={query} onChange={e => setQuery(e.target.value)} /></label>}
-      <div className="sw-side-tools"><Button icon="book" disabled={!detail} onClick={() => setTool('papers')}>资料库</Button><Button icon="lab" disabled={!detail} onClick={() => setTool('experiments')}>实验环境</Button></div>
-      <nav aria-label="科研任务列表">{workspace.listLoading ? <p className="sw-loading"><span className="sw-spinner" /></p> : tasks.map(task => <button key={task.id} className={`sw-task ${task.id === workspace.selectedId ? 'active' : ''}`} disabled={!!busy} title={task.title} onClick={() => { void switchTask(task.id); }}><span>{task.title || '新的科研任务'}</span>{['researching', 'retrieving'].includes(task.phase) && <i className="sw-task-live" title="研究阶段" />}</button>)}{searching && !tasks.length && <p className="sw-sidebar-empty">没有匹配的任务</p>}</nav>
-      <footer><Button icon="settings" onClick={() => setSettingsOpen(true)}>个人工作区</Button></footer>
-    </aside>
+    <TaskNavigation open={sidebar} busy={!!busy} searching={searching} query={query} tasks={tasks} selectedId={workspace.selectedId} loading={workspace.listLoading} hasTask={!!detail} modelReady={modelReady}
+      onClose={() => { setSidebar(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="展开侧边栏"]')?.focus()); }}
+      onSearch={() => setSearching(!searching)} onQuery={setQuery} onChoose={id => { void switchTask(id); }} onNew={() => { void switchTask(null); }}
+      onLibrary={() => setTool('papers')} onExperiments={() => setTool('experiments')} onSettings={() => setSettingsOpen(true)} />
     <main className="sw-main">
-      <header className="sw-shell-header"><div className="sw-shell-title">{!sidebar && <Button icon="panel" aria-label="展开侧边栏" onClick={() => setSidebar(true)} />}<h2 title={detail?.task.title}>{detail?.task.title || ''}</h2></div>
-        <div className="sw-shell-actions">{!preparing && detail && <><div className="sw-live-agents">{liveAgents.slice(0, 3).map((node, index) => <button key={node.id} title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} aria-label={'查看节点：' + node.title} onClick={() => setSelectedNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}><Avatar small index={index} /></button>)}{liveAgents.length > 0 && <span>{liveAgents.length} 运行中</span>}</div>{canControlResearch(detail) ? <Button icon={detail.state?.paused ? 'play' : 'pause'} busy={busy === 'pause' || busy === 'resume'} disabled={!!busy} onClick={() => { void action(detail.state?.paused ? 'resume' : 'pause'); }}>{detail.state?.paused ? '继续' : '暂停'}</Button> : <Badge status={detail.phase} />}</>}
-          {!empty && <><Button className="sw-work-toggle" icon="panel" aria-label={workOpen ? '收起工作区' : '打开工作区'} onClick={() => setWorkOpen(!workOpen)}>工作区</Button><Button className="sw-mobile-work-toggle" icon={smallWork ? 'chat' : 'panel'} onClick={() => setSmallWork(!smallWork)}>{smallWork ? '对话' : '工作区'}</Button><Dropdown trigger={['click']} menu={{ items: [
-            ...(!preparing ? [{ key: 'structure', label: 'Agent 结构', onClick: () => { setWorkspaceView('structure'); setWorkOpen(true); setSmallWork(true); } }, { key: 'output', label: '研究产物', onClick: () => { setWorkspaceView('outputs'); setWorkOpen(true); setSmallWork(true); } }, { key: 'claims', label: '主张与证据', onClick: () => setTool('claims') }, { key: 'process', label: '完整运行记录', onClick: () => setTool('process') }, { key: 'draft', label: '修改研究需求', onClick: () => setNotebookEditorOpen(true) }] : []),
+      <header className="sw-shell-header"><div className="sw-shell-title">{!sidebar && <Button icon="panel" aria-label="展开侧边栏" onClick={() => setSidebar(true)} />}<div className="sw-title-stack"><h2 title={detail?.task.title}>{detail?.task.title || '新的研究'}</h2><span>{detail ? `第 ${detail.task.round} 轮研究` : '你的个人科研工作区'}</span></div></div>
+        <div className="sw-shell-actions">
+          {!preparing && detail && <><div className="sw-live-agents">{liveAgents.slice(0, 3).map((node, index) => <button key={node.id} title={node.title + '：' + (node.logs.at(-1)?.message || node.role)} aria-label={'查看节点：' + node.title} onClick={() => setSelectedNode({ id: node.id, nodeId: node.id, sourceKind: 'agent', active: node.active, title: node.title, status: node.status, action: node.role })}><Avatar small index={index} /></button>)}{liveAgents.length > 0 && <span>{liveAgents.length} 运行中</span>}</div>{canControlResearch(detail) ? <Button aria-label={detail.state?.paused ? '继续' : '暂停'} className="sw-research-control-button" icon={detail.state?.paused ? 'play' : 'pause'} busy={busy === 'pause' || busy === 'resume'} disabled={!!busy} onClick={() => { void action(detail.state?.paused ? 'resume' : 'pause'); }}><span className="sw-control-label">{detail.state?.paused ? '继续' : '暂停'}</span></Button> : <Badge status={detail.phase} />}</>}
+          <GlassGroup className="sw-toolbar-group" label="视图与工具">
+            <AppearanceControl tint={glassTint} onTint={setGlassTint} reduced={reduceTransparency} onReduced={setReduceTransparency} />
+            <GlassButton className="sw-toolbar-settings" icon="settings" aria-label="打开模型设置" title="模型与设置（⌘/Ctrl + ,）" onClick={() => setSettingsOpen(true)} />
+            {!empty && <><GlassButton className="sw-work-toggle" icon="panel" aria-pressed={workOpen} aria-label={workOpen ? '收起工作区' : '打开工作区'} title={workOpen ? '收起工作区' : '打开工作区'} onClick={() => setWorkOpen(!workOpen)} /><GlassButton className="sw-mobile-work-toggle" aria-pressed={smallWork} icon={smallWork ? 'chat' : 'panel'} onClick={() => setSmallWork(!smallWork)}>{smallWork ? '对话' : '工作区'}</GlassButton><Dropdown trigger={['click']} menu={{ items: [
+            ...(!preparing ? [{ key: 'structure', label: '研究结构', onClick: () => { setWorkspaceView('structure'); setWorkOpen(true); setSmallWork(true); } }, { key: 'output', label: '研究产物', onClick: () => { setWorkspaceView('outputs'); setWorkOpen(true); setSmallWork(true); } }, { key: 'claims', label: '主张与证据', onClick: () => setTool('claims') }, { key: 'process', label: '完整运行记录', onClick: () => setTool('process') }, { key: 'draft', label: '修改研究需求', onClick: () => setNotebookEditorOpen(true) }] : []),
             ...(detail?.phase === 'completed' ? [{ key: 'round', label: '开始下一轮研究', onClick: () => { setContext(null); setIntent('next_round'); focusComposer(); } }] : []),
             { key: 'materials', label: '材料与资源', onClick: () => setMaterialsOpen(true) }, { key: 'history', label: '历史与检查点', onClick: () => setHistoryOpen(true) }, { key: 'export', label: '导出研究档案', disabled: preparing || !!busy, onClick: () => { void exportTask(); } },
-          ] }}><Button icon="more" aria-label="任务菜单" /></Dropdown></>}
+          ] }}><GlassButton icon="more" aria-label="任务菜单" /></Dropdown></>}
+          </GlassGroup>
         </div>
       </header>
       {currentError && <ErrorNote onRetry={() => { setError(''); void workspace.refresh(); }}>{currentError}</ErrorNote>}
       {detail && <Checkpoint key={detail.task.id} detail={detail} accept={workspace.accept} onNotebook={() => { if (preparing) { setWorkOpen(true); setSmallWork(true); } else setNotebookEditorOpen(true); }} />}
-      {workspace.loading ? <div className="sw-loading-screen"><span className="sw-spinner" /><span>正在读取</span></div> : empty ? <section className="sw-entry"><h1>你想研究什么？</h1><Composer centered value={composer} onChange={setComposer} onSend={() => { void send(); }} busy={busy === 'message'} onAttach={() => { if (detail) setMaterialsOpen(true); else void guarded('create', async () => { await createFromEntry(true); }); }} />{!modelReady && <Button className="sw-connect-model" icon="settings" onClick={() => setSettingsOpen(true)}>连接 DeepSeek</Button>}</section> : preparing && detail ? <Preparation detail={detail} editor={editor} busy={busy} modelReady={modelReady} composer={composerElement} conversation={conversation} onStart={() => { void start(); }} onMode={value => { void mode(value); }} /> : detail && <div className="sw-research-split">{conversation}<div className="sw-visual-workspace">{workspaceView === 'outputs' ? <ResearchOutputs key={detail.task.id} detail={detail} onInspect={setSelectedArtifact} onDiscuss={discussArtifact} onExport={() => { void exportTask(); }} onStructure={() => setWorkspaceView('structure')} /> : <AgentStructure detail={detail} onNode={setSelectedNode} onInspect={setSelectedArtifact} onDiscuss={discussNode} />}</div></div>}
+      {workspace.loading ? <div className="sw-loading-screen"><span className="sw-spinner" /><span>正在读取</span></div> : empty ? <EntrySurface modelReady={modelReady} onSettings={() => setSettingsOpen(true)} onSuggestion={text => { setComposer(current => current.trim() ? `${current}\n\n${text}` : text); focusComposer(); }}><Composer centered value={composer} onChange={setComposer} onSend={() => { void send(); }} busy={busy === 'message'} placeholder="描述你的问题，或添加一份研究材料…" onAttach={() => { if (detail) setMaterialsOpen(true); else void guarded('create', async () => { await createFromEntry(true); }); }} /></EntrySurface> : preparing && detail ? <Preparation detail={detail} editor={editor} busy={busy} modelReady={modelReady} composer={composerElement} conversation={conversation} separator={<PaneDivider value={panePercent} onChange={setPanePercent} />} onStart={() => { void start(); }} onMode={value => { void mode(value); }} /> : detail && <div className="sw-research-split">{conversation}<PaneDivider value={panePercent} onChange={setPanePercent} /><div className="sw-visual-workspace"><WorkspaceTabs value={workspaceView} onChange={setWorkspaceView} /><div className="sw-workspace-surface" key={workspaceView}>{workspaceView === 'outputs' ? <ResearchOutputs key={detail.task.id} detail={detail} onInspect={setSelectedArtifact} onDiscuss={discussArtifact} onExport={() => { void exportTask(); }} onStructure={() => setWorkspaceView('structure')} /> : <AgentStructure detail={detail} onNode={setSelectedNode} onInspect={setSelectedArtifact} onDiscuss={discussNode} />}</div></div></div>}
     </main>
     <ModelSettings open={settingsOpen} settings={settings} onClose={() => setSettingsOpen(false)} onSaved={value => { setSettings(value); void workspace.refresh(); }} />
     {detail && <div key={detail.task.id}><ArtifactInspector selected={selectedArtifact} detail={detail} onClose={() => setSelectedArtifact(null)} onPaper={setSelectedPaper} onProposal={setReview} onDiscuss={discussArtifact} refresh={workspace.refresh} /><ImpactReview review={review} detail={detail} onClose={() => setReview(null)} onUpdated={setReview} onApplied={workspace.refresh} /><MaterialsDrawer open={materialsOpen} detail={detail} onClose={() => setMaterialsOpen(false)} refresh={workspace.refresh} /><TaskNodeDrawer target={selectedNode} detail={detail} onClose={() => setSelectedNode(null)} onPaper={setSelectedPaper} accept={workspace.accept} /><TaskPaperDrawer paper={detail.state?.papers.find(p => p.id === selectedPaper)} taskId={detail.task.id} state={detail.state} onClose={() => setSelectedPaper(null)} onPaper={setSelectedPaper} />

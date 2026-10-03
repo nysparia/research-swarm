@@ -1,14 +1,9 @@
-import { useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { BlurText } from '../BlurReveal';
 import { statusLabels } from './state';
 
-const agentPortraits = [
-  { name: '目白麦昆', src: new URL('../assets/avatars/mejiro-mcqueen.png', import.meta.url).href, background: '#f0edfb' },
-  { name: '爱丽速子', src: new URL('../assets/avatars/agnes-tachyon.png', import.meta.url).href, background: '#fff3e7' },
-  { name: '米浴', src: new URL('../assets/avatars/rice-shower.png', import.meta.url).href, background: '#eef2fc' },
-];
-
 const paths: Record<string, string> = {
+  appearance: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0v18M12 7h4M12 11h6M12 15h5',
   more: 'M5 12h.01M12 12h.01M19 12h.01', attach: 'm8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L13 2', edit: 'm4 16 12-12 4 4-12 12H4v-4ZM14 6l4 4', target: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3M22 12h-3M12 22v-3M2 12h3M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   plus: 'M12 5v14M5 12h14', arrow: 'M7 17 17 7M7 7h10v10', send: 'M12 20V4m-7 7 7-7 7 7', panel: 'M3 4h18v16H3V4Zm11 0v16', copy: 'M9 9h12v12H9zM15 5V3H3v12h2',
   menu: 'M4 6h16M4 12h16M4 18h16', close: 'm6 6 12 12M6 18 18 6',
@@ -28,16 +23,15 @@ const paths: Record<string, string> = {
   spark: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z',
 };
 export function Icon({ name, className = '' }: { name: string; className?: string }) { return <svg className={`sw-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name] || paths.book} /></svg>; }
-export function Button({ children, icon, variant = 'quiet', className = '', busy, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon?: string; variant?: 'quiet' | 'primary' | 'outline' | 'danger'; busy?: boolean }) {
-  return <button {...props} disabled={props.disabled || busy} className={`sw-button sw-button-${variant} ${className}`}>{busy ? <span className="sw-spinner" /> : icon ? <Icon name={icon} /> : null}{children}</button>;
-}
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { icon?: string; variant?: 'quiet' | 'primary' | 'outline' | 'danger'; busy?: boolean };
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({ children, icon, variant = 'quiet', className = '', busy, ...props }, ref) {
+  return <button ref={ref} type="button" {...props} aria-busy={busy || undefined} disabled={props.disabled || busy} className={`sw-button sw-button-${variant} ${className}`}>{busy ? <span className="sw-spinner" /> : icon ? <Icon name={icon} /> : null}{children}</button>;
+});
 export function Badge({ status, text }: { status: string; text?: string }) { return <span className={`sw-badge sw-status-${status}`}><i /><BlurText kind="status" text={text || statusLabels[status] || status} /></span>; }
 export function Empty({ icon = 'layers', title, children }: { icon?: string; title: string; children?: ReactNode }) { return <div className="sw-empty"><span className="sw-empty-icon"><Icon name={icon} /></span><h3>{title}</h3><div>{children}</div></div>; }
 export function ErrorNote({ children, onRetry }: { children: ReactNode; onRetry?: () => void }) { return <div className="sw-error" role="alert"><span>{children}</span>{onRetry && <Button icon="retry" onClick={onRetry}>重试</Button>}</div>; }
 export function Avatar({ index = 0, small = false }: { index?: number; small?: boolean }) {
-  const portrait = agentPortraits[index % agentPortraits.length] || agentPortraits[0];
-  // Frame the face from the unchanged, locally bundled official character portrait.
-  return <svg className={`sw-avatar ${small ? 'small' : ''}`} viewBox="30 30 236 236" aria-hidden="true" focusable="false" style={{ overflow: 'hidden' }}><title>{portrait.name} · ウマ娘 プリティーダービー · © Cygames, Inc.</title><rect x="30" y="30" width="236" height="236" fill={portrait.background} /><image href={portrait.src} width="296" height="389" /></svg>;
+  return <span className={`sw-avatar sw-agent-glyph sw-agent-glyph-${index % 3} ${small ? 'small' : ''}`} aria-hidden="true"><Icon name={['layers', 'lab', 'book'][index % 3]} /></span>;
 }
 export function Composer({ value, onChange, onSend, busy, centered = false, onAttach, onHistory, context, controls, placeholder, disabled = false }: { value: string; onChange: (value: string) => void; onSend: () => void; busy: boolean; centered?: boolean; onAttach?: () => void; onHistory?: () => void; context?: ReactNode; controls?: ReactNode; placeholder?: string; disabled?: boolean }) {
   const composing = useRef(false); const input = useRef<HTMLTextAreaElement>(null);

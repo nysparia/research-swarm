@@ -38,7 +38,7 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
     } catch (error) { setError(messageOf(error)); }
     finally { setBusy(''); }
   };
-  return <Drawer open={open} title="运行模式与模型角色" size="min(520px, 100vw)" onClose={onClose} rootClassName="task-drawer" footer={<Space wrap><Button disabled={Boolean(busy)} onClick={onClose}>关闭</Button><Button loading={busy === 'save'} disabled={Boolean(busy)} onClick={() => { void save(false); }}>保存设置</Button><Button type="primary" loading={busy === 'test'} disabled={Boolean(busy) || (!inherited && (!draft.baseUrl.trim() || !draft.model.trim())) || (inherited && (!drafts.main.baseUrl.trim() || !drafts.main.model.trim()))} onClick={() => { void save(true); }}>保存并测试{providerRoleLabels[role]}</Button></Space>}>
+  return <Drawer open={open} title="运行模式与模型角色" size="min(520px, 100vw)" onClose={onClose} rootClassName="task-drawer sw-drawer" footer={<Space wrap><Button disabled={Boolean(busy)} onClick={onClose}>关闭</Button><Button loading={busy === 'save'} disabled={Boolean(busy)} onClick={() => { void save(false); }}>保存设置</Button><Button type="primary" loading={busy === 'test'} disabled={Boolean(busy) || (!inherited && (!draft.baseUrl.trim() || !draft.model.trim())) || (inherited && (!drafts.main.baseUrl.trim() || !drafts.main.model.trim()))} onClick={() => { void save(true); }}>保存并测试{providerRoleLabels[role]}</Button></Space>}>
     <p className="settings-intro">{inferenceLocation(settings)}。任务编排与档案在本机；推理数据发送到所选模型端点，API Key 会用于该端点的鉴权。</p>
     <label className="simple-label">运行模式</label>
     <Segmented block value={mode} disabled={Boolean(busy)} options={[{ label: '本地资料核验', value: 'evidence' }, { label: '启用模型推理', value: 'llm' }]} onChange={value => setMode(value as Settings['mode'])} />
@@ -57,7 +57,7 @@ export function ProviderSettingsDrawer({ open, settings, onClose, onSaved }: { o
     <Input id="provider-url" value={draft.baseUrl} onChange={event => change('baseUrl', event.target.value)} disabled={Boolean(busy)} placeholder="https://… 或 http://127.0.0.1:…" />
     <label className="simple-label" htmlFor="provider-model">模型名称</label>
     <Input id="provider-model" value={draft.model} onChange={event => change('model', event.target.value)} disabled={Boolean(busy)} placeholder="填写该端点可用的模型名称" />
-    <label className="simple-label" htmlFor="provider-key">API Key</label>
+    <label className="simple-label" htmlFor="provider-key">API 密钥</label>
     <Input.Password id="provider-key" value={draft.apiKey} onChange={event => change('apiKey', event.target.value)} autoComplete="new-password" placeholder={saved.hasKey ? '留空保留该角色现有密钥' : '回环端点可不填；远程端点需要密钥'} disabled={Boolean(busy)} />
     <p className="quiet-text">更换服务地址会清除旧密钥，避免将其发送到新端点；如需鉴权，请重新输入。{isLoopbackEndpoint(draft.baseUrl) ? '连接回环地址；端点本身是否转发到云端，需由你核对其部署。' : '将向此远程端点发送任务相关文本和证据片段。'} 模型名称或地址不同只表示配置不同，不证明厂商、模型族或判断在认知上独立。未配置裁判时，主模型结果标为未独立复核；不会静默使用主模型冒充裁判。</p>
     {search && <SearchSettingsPanel value={search} onChange={setSearch} settings={settings} keys={searchKeys} onKeyChange={(source, value) => setSearchKeys(previous => ({ ...previous, [source]: value }))} disabled={Boolean(busy)} />}
