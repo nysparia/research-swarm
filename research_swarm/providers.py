@@ -30,6 +30,15 @@ class ModelConnectionError(RuntimeError):
     """A temporary transport failure, never an authentication failure."""
 
 
+class ModelAuthenticationError(RuntimeError):
+    """A provider rejected its configured credential; the key is never included."""
+
+    def __init__(self, message, status_code, role):
+        super().__init__(message)
+        self.status_code = status_code
+        self.role = role
+
+
 def parse_json_object(text: str) -> dict:
     text = text.strip()
     if text.startswith('```') and text.endswith('```'):
@@ -539,6 +548,10 @@ class Settings:
                 telemetry['usage'] = result.get('usage')
         except urllib.error.HTTPError as exc:
             detail = self._http_error_detail(exc)
+            if exc.code == 401:
+                raise ModelAuthenticationError(
+                    '模型接口返回 HTTP 401' + (detail or '；请检查地址、模型和额度'), exc.code, role
+                ) from None
             if exc.code in (408, 429, 500, 502, 503, 504):
                 raise ModelConnectionError(f'模型服务暂时不可用（HTTP {exc.code}），可稍后继续' + detail) from None
             raise RuntimeError(f'模型接口返回 HTTP {exc.code}' + (detail or '；请检查地址、模型和额度')) from None

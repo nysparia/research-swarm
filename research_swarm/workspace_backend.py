@@ -50,7 +50,13 @@ class WorkspaceBackend:
         if self._closed or self.workspace._closed:
             raise ValueError('研究服务已停止')
 
+    def _legacy_only(self, task_id):
+        if self.workspace.workflow_version(task_id) != 'legacy':
+            from .v2_contracts import DomainError
+            raise DomainError('legacy_route_denied', 'v2 禁止旧工作台写路径或工具队列', 403)
+
     def store(self, task_id):
+        self._legacy_only(task_id)
         self.workspace._record(task_id)
         with self._factory_lock:
             self._check_open()
@@ -59,6 +65,7 @@ class WorkspaceBackend:
             return self._stores[task_id]
 
     def materials(self, task_id):
+        self._legacy_only(task_id)
         self.workspace._record(task_id)
         with self._factory_lock:
             self._check_open()
@@ -68,6 +75,7 @@ class WorkspaceBackend:
             return self._materials[task_id]
 
     def jobs(self, task_id):
+        self._legacy_only(task_id)
         self.workspace._record(task_id)
         with self._factory_lock:
             self._check_open()
@@ -158,6 +166,7 @@ class WorkspaceBackend:
         return item
 
     def post(self, task_id, action, payload):
+        self._legacy_only(task_id)
         ws = self.workspace
         if action == 'research-choice':
             return self.research_choice(task_id, payload)

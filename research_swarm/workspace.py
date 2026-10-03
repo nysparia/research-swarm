@@ -16,7 +16,8 @@ from pathlib import Path
 from .providers import Settings, parse_json_object
 from .concept_search import ObsoleteDraft
 from .requirement_concepts import carry_understanding, draft_with_concepts, require_clear_concepts
-from .server import APP_ROOT, ResearchApplication, export_bundle, utc_now
+from .runtime import APP_ROOT, ResearchApplication, utc_now
+from .exports import export_bundle
 
 
 def identity():
@@ -37,6 +38,7 @@ class WorkspaceApplication:
         self._mutation_lock = threading.RLock()
         self._apps_lock = threading.RLock()
         self._records, self._apps, self._threads = {}, {}, []
+        self._v2_apps, self._unknown_workflows = {}, set()
         self._closed = False
         self._stop_event = threading.Event()
         self._configuring = False
@@ -49,6 +51,9 @@ class WorkspaceApplication:
                 continue
             try:
                 record = json.loads(path.read_text(encoding='utf-8'))
+                if record.get('workflowVersion', 'legacy') != 'legacy':
+                    self._unknown_workflows.add(path.parent.name)
+                    continue
                 record.setdefault('taskMode', 'research')
                 if record['id'] != path.parent.name:
                     continue
@@ -81,6 +86,16 @@ class WorkspaceApplication:
                     self._save(record)
             except (ValueError, KeyError, TypeError):
                 continue
+        from .v2_app import ConversationApplication
+        from .v2_contracts import DomainError
+        for path in self._data_root.glob('*/research.sqlite'):
+            if not re.fullmatch(r'[a-f0-9]{32}', path.parent.name):
+                continue
+            try:
+                self._v2_apps[path.parent.name] = ConversationApplication(self.source, path.parent, self.settings)
+                self._records.pop(path.parent.name, None)
+            except DomainError:
+                self._unknown_workflows.add(path.parent.name)
         marker = self.state_dir / 'source-imported.json'
         if import_existing and not marker.exists():
             try:
@@ -170,7 +185,9 @@ class WorkspaceApplication:
         with self._lock:
             for record in self._records.values():
                 self._synchronize(record)
-            return [self._summary(r) for r in sorted(self._records.values(), key=lambda r: r['updatedAt'], reverse=True)]
+            summaries = [self._summary(r) for r in self._records.values()]
+            summaries.extend(app.detail()['task'] for app in self._v2_apps.values())
+            return sorted(summaries, key=lambda r: r['updatedAt'], reverse=True)
 
     def _synchronize(self, record):
         app = self._apps.get(record['id'])
@@ -202,7 +219,26 @@ class WorkspaceApplication:
             self._message(record, 'assistant', f'{len(failed)} 个节点执行失败：\n'+'\n'.join('- '+reason for reason in reasons)+'\n已完成结果保留，失败原因和原始错误可在节点历史中查看。', 'progress')
             self._save(record)
 
+    def workflow_version(self, task_id):
+        from .v2_contracts import VERSION, DomainError
+        if task_id in self._unknown_workflows:
+            raise DomainError('unsupported_workflow', '未知任务流程版本，拒绝写入', 409)
+        if task_id in self._v2_apps:
+            return VERSION
+        record = self._record(task_id)
+        version = record.get('workflowVersion', 'legacy')
+        if version != 'legacy':
+            raise DomainError('unsupported_workflow', '未知任务流程版本，拒绝写入', 409)
+        return version
+
+    def event_page(self, task_id, after=0, limit=100):
+        if self.workflow_version(task_id) != 'legacy':
+            return self._v2_apps[task_id].store.events(after, limit)
+        return self.backend.event_page(task_id, after, limit)
+
     def detail(self, task_id):
+        if self.workflow_version(task_id) != 'legacy':
+            return self._v2_apps[task_id].detail()
         with self._lock:
             record = self._record(task_id)
             self._synchronize(record)
@@ -370,6 +406,9 @@ class WorkspaceApplication:
                 self._save(record)
 
     def _ensure_app(self, task_id):
+        if self.workflow_version(task_id) != 'legacy':
+            from .v2_contracts import DomainError
+            raise DomainError('legacy_runtime_denied', 'v2 禁止创建旧 Engine', 403)
         with self._apps_lock:
             if task_id in self._apps:
                 return self._apps[task_id]
@@ -378,25 +417,26 @@ class WorkspaceApplication:
                 record = copy.deepcopy(self._record(task_id))
             root = self._data_root / task_id
             source = prepare_source(self.source, root / 'source', task_id, record['title'], record['document']['markdown'], import_existing=record['imported'])
-            app = ResearchApplication(source, root / 'runtime', self.max_workers, workflow='autonomous')
-            app.settings = self.settings
-            app.runner.settings = self.settings
-            def task_runner(node, context, log):
-                meter = self.settings.usage_context(task_id, node['id']) if hasattr(self.settings, 'usage_context') else nullcontext()
-                with self._lock:
-                    context['executionSettings'] = copy.deepcopy(self._record(task_id).get('executionSettings', {}))
-                    context['researchPlan'] = copy.deepcopy(self._record(task_id).get('plan', {}))
-                materials = self.backend.materials(task_id)
-                context['inputMaterials'] = [dict(materials.get(mid), path=str(materials.path(mid)))
-                    for mid in context['executionSettings'].get('materialIds', [])]
-                context['inputMaterialsRoot'] = str(materials.root)
-                context['experimentJobs'] = self.backend.jobs(task_id)
-                if hasattr(app.runner, 'local_tools'):
-                    app.runner.local_tools = context['experimentJobs'].tools
-                with meter:
-                    return app.runner(node, context, log)
-            app.engine._runner = task_runner
-            app.mutation_lock = self._mutation_lock
+            def runner_wrapper(app):
+                def task_runner(node, context, log):
+                    meter = self.settings.usage_context(task_id, node['id']) if hasattr(self.settings, 'usage_context') else nullcontext()
+                    with self._lock:
+                        context['executionSettings'] = copy.deepcopy(self._record(task_id).get('executionSettings', {}))
+                        context['researchPlan'] = copy.deepcopy(self._record(task_id).get('plan', {}))
+                    materials = self.backend.materials(task_id)
+                    context['inputMaterials'] = [dict(materials.get(mid), path=str(materials.path(mid)))
+                        for mid in context['executionSettings'].get('materialIds', [])]
+                    context['inputMaterialsRoot'] = str(materials.root)
+                    context['experimentJobs'] = self.backend.jobs(task_id)
+                    if hasattr(app.runner, 'local_tools'):
+                        app.runner.local_tools = context['experimentJobs'].tools
+                    with meter:
+                        return app.runner(node, context, log)
+                return task_runner
+
+            app = ResearchApplication(source, root / 'runtime', self.max_workers, workflow='autonomous',
+                                      settings=self.settings, mutation_lock=self._mutation_lock,
+                                      runner_wrapper=runner_wrapper)
             with self._lock:
                 if self._closed:
                     app.engine.close()
@@ -516,6 +556,8 @@ class WorkspaceApplication:
             raise ValueError('需求文档版本已变化，请同步后再开始新一轮研究')
 
     def _settings_busy(self):
+        if any(app.busy() for app in self._v2_apps.values()):
+            return True
         if self._configuring or any(r['phase'] == 'retrieving' or r['document']['polishing'] for r in self._records.values()):
             return True
         if any(any(o['status'] == 'running' for o in app.operations) for app in self._apps.values()):
@@ -534,7 +576,16 @@ class WorkspaceApplication:
 
     def _post(self, path, payload):
         if path == '/api/tasks':
+            from .v2_contracts import VERSION, DomainError
+            version = payload.get('workflowVersion', 'legacy')
+            if version not in ('legacy', VERSION):
+                raise DomainError('unsupported_workflow', '未知流程版本', 409)
             with self._lock:
+                if version == VERSION:
+                    from .v2_app import ConversationApplication
+                    task_id = identity()
+                    self._v2_apps[task_id] = ConversationApplication(self.source, self._data_root / task_id, self.settings, task_id)
+                    return self.detail(task_id)
                 return self.detail(self._create()['id'])
         if path in ('/api/setup', '/api/settings', '/api/settings/deepseek'):
             with self._lock:
@@ -567,6 +618,12 @@ class WorkspaceApplication:
         if not match:
             raise ValueError('未知科研任务操作')
         task_id, action = match.groups()
+        if self.workflow_version(task_id) != 'legacy':
+            if self._configuring:
+                raise ValueError('正在验证模型配置，请稍后再试')
+            return self._v2_apps[task_id].post(action, payload)
+        if action == 'import-v2':
+            return self._import_v2(task_id, payload)
         with self._lock:
             self._record(task_id)
         result = self.backend.post(task_id, action, payload)
@@ -637,6 +694,34 @@ class WorkspaceApplication:
                     return self.detail(task_id)
         raise ValueError('未知科研任务操作')
 
+    def _import_v2(self, task_id, payload):
+        import hashlib
+        from .v2_contracts import DomainError
+        from .v2_legacy import read_history
+        from .v2_app import ConversationApplication
+        from .v2_store import encode
+        if payload:
+            raise DomainError('invalid_request', '只读导入不接受执行权限或自动确认')
+        new_id = hashlib.sha256(('v2-import:' + task_id).encode()).hexdigest()[:32]
+        if new_id in self._v2_apps:
+            return self._v2_apps[new_id].detail()
+        history = read_history(self._data_root / task_id)
+        app = ConversationApplication(self.source, self._data_root / new_id, self.settings, new_id, '导入历史研究')
+        self._v2_apps[new_id] = app
+        content = history['document'].get('markdown') or '已导入历史研究；请明确新的研究范围。'
+        # Import never calls an understanding model and never fabricates confirmation.
+        from .v2_intent import understand
+        class OfflineSettings:
+            def public(self):
+                return {'mode': 'evidence', 'capabilities': {'modelReady': False}}
+        mid, generation, version = app.store.message(content, 'draft', True)
+        value, _ = understand(OfflineSettings(), app.store.snapshot()['messages'])
+        app.store.draft(value, generation, version)
+        with app.store.transaction() as db:
+            db.execute('INSERT INTO historical_import VALUES(?,?)', (task_id, encode(history)))
+            app.store.event(db, 'legacy.imported', {'sourceTaskId': task_id, 'sourceDocumentVersion': history['document'].get('revision'), 'eligibleAsAuthorization': False})
+        return app.detail()
+
     def read_api(self, path, query=''):
         if path == '/api/tasks':
             return 200, {'tasks': self.tasks()}, 'application/json', None
@@ -648,6 +733,11 @@ class WorkspaceApplication:
         if not match:
             return None
         task_id, action = match.groups()
+        if self.workflow_version(task_id) != 'legacy':
+            return self._v2_apps[task_id].read(action or '', query)
+        if action == 'history':
+            from .v2_legacy import read_history
+            return 200, read_history(self._data_root / task_id), 'application/json', None
         detail = self.detail(task_id)
         if not action:
             return 200, detail, 'application/json', None
@@ -718,6 +808,8 @@ class WorkspaceApplication:
             self._closed = True
             self._stop_event.set()
             apps_to_close = list(self._apps.values())
+        for app in self._v2_apps.values():
+            app.close()
         for app in apps_to_close:
             app.engine.close()
         for thread in self._threads:

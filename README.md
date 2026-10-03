@@ -76,6 +76,8 @@ judge 只接收主张原文、原始证据及量规，不接收生产者摘要�
 
 ## 验证与开发
 
+后端阅读入口见 [后端结构与职责](docs/backend-architecture.md)，接口细节见 [后端工作台 API](docs/backend-workspace-api.md)。
+
 ```powershell
 python -m pip install -r requirements.txt
 npm.cmd ci

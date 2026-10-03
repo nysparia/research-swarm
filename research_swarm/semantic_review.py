@@ -150,8 +150,8 @@ direct_statement 只用于正文直接陈述；verified_measurement 须有宿主
         relations = value.get('evidenceRelations', [])
         validate_relations(relations, set(known), binding)
         verdict = value.get('hypothesisVerdict', {})
-        from .research_cycle import validate_output
-        validate_output('hypothesis', 'aggregate', {'hypothesisVerdict': verdict}, set(known))
+        from .scientific_validation import validate_verdict
+        validate_verdict(verdict, set(known))
         record_validation(settings)
         gaps = []
         omitted = set(known) - {r['evidenceId'] for r in relations}

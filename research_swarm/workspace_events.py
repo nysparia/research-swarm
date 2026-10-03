@@ -10,7 +10,8 @@ def serve_events(handler, app, path, query):
     if not match or not hasattr(app, 'backend'):
         return False
     cursor = handler.headers.get('Last-Event-ID') or parse_qs(query).get('after', ['0'])[0]
-    page = app.backend.event_page(match[1], cursor, 100)
+    event_page = getattr(app, 'event_page', app.backend.event_page)
+    page = event_page(match[1], cursor, 100)
     handler.send_response(200)
     handler.send_header('Content-Type', 'text/event-stream; charset=utf-8')
     handler.send_header('Cache-Control', 'no-store')
@@ -35,7 +36,7 @@ def serve_events(handler, app, path, query):
                 heartbeat = time.monotonic()
             if app._stop_event.wait(.25):
                 break
-            page = app.backend.event_page(match[1], cursor, 100)
+            page = event_page(match[1], cursor, 100)
     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
         pass
     return True

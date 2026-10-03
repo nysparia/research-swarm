@@ -2,6 +2,43 @@
 
 Tailwind 前端工作台已接入本页的后端能力。服务仍限本机同源，所有路径以 `/api/tasks/<taskId>` 开头（设置接口除外）。每个任务有独立的需求、工作台 SQLite、引擎和实验文件。原任务数据可直接打开，新工作台投影按需生成。
 
+## Conversation-only v2 契约
+
+新流程的设计边界与验收标准见 [v2 契约与兼容说明](backend-v2-contract.md)。任务创建时显式指定 `workflowVersion: "conversation_only_v2"`；不指定时保持 legacy。已有 legacy 调用不要求增加这些新字段，前端默认流程不变。
+
+v2 沿用 `/api/tasks` 和任务详情、`messages`、`workbench`、`report`、`events`、`events/stream`、`export` 等入口；只有旧接口不能表达研究契约的操作才新增接口。所有任务路径仍以 `/api/tasks/<taskId>` 为前缀。
+
+| 方法与路径 | 契约 |
+|---|---|
+| POST `/messages` | `{text,intent?,brief?}`；intent 为 `ask`、`revise_scope`、`next_round`。尚无 Run 时默认整理草稿，有 Run 时默认 ask。显式 `brief` 用于无模型时提供精确草稿，仍须来源绑定、校验和确认；ask 不接受 brief。 |
+| GET `/brief` | 返回草稿、确认版本、理解/澄清信息。Markdown 只是只读投影。 |
+| POST `/brief/confirm` | `{expectedBriefVersion}`；确认具体版本，不自动启动。 |
+| POST `/research/start` | `{expectedBriefVersion,requestId}`；只允许当前已确认版本。requestId 同键同参重放，同键异参冲突。 |
+| POST `/start` | v2 的兼容启动入口，走同一个启动门；`expectedRevision` 可映射为 Brief 版本，仍须已确认并提供 requestId。legacy 保持旧行为。 |
+| GET `/research` | 当前 Run、阶段、执行节点、研究产物及异常信息。 |
+| POST `/research/actions` | `{runId,revision,action}`；action 为 pause/resume/retry/cancel，revision 为 Run 版本。副作用结果不明时只有显式 retry 且 `acknowledgeUnknownSideEffects:true` 才允许重试。 |
+| GET `/exceptions` | 当前任务的类型化研究异常。 |
+| POST `/exceptions/<id>/resolve` | `{runId,revision,runRevision,requestId,optionId}`；revision 为异常版本，runRevision 为运行版本。宿主按异常提供 dismiss/revise_scope/cancel_run；外部条件可修复时另提供 retry。retry 只关闭异常并进入暂停，仍需显式恢复；不包含提权或提交密钥。 |
+
+v2 不允许 `/document`、`/draft`、`/research-choice` 或其他旧写路径绕过契约。旧编辑器仍属于 legacy 界面，不代表 v2 接受 Markdown 写契约。未确认契约时，调用旧 `/start` 也不能启动研究。旧 `/actions/pause|resume|retry|cancel` 可沿用，服务端映射当前 Run 与版本并经过同一动作守卫；不明副作用仍需显式确认。旧消息中的 `startNewRound:true,expectedRevision` 可映射为 next_round，仍检查版本和终态。
+
+报告 `ready:true` 表示可导出，不表示研究要求全部满足；`acceptance.status` 为 met/partial/unmet，`objectiveResults` 给出逐项目标的回答、来源和未满足条件。`allowLocalExperiment/allowReplication` 仅许可验证；明确要求实测或复现结果时使用 `evidencePolicy.experimentRequired/replicationRequired`，且对应 allow 必须开启。否则只在验证规划提出必要方案时执行，不会仅因许可为 true 就强制做实验。
+
+`events` 继续保留 `events/nextCursor/more` 分页形状，并附加 `cursorKind: "domain_event"`；v2 游标属于本任务领域事件，不是 Workbench 产物版本。任务版本不同不影响 URL，但不得跨任务复用游标或混淆版本字段。
+
+执行政策使用 `allowLocalExperiment` 和 `allowCodeInspection` 等明确字段；`allowExperiment` 仅作为输入别名归一化为 `allowLocalExperiment`。当前 v2 尚未开放代码检查能力，`allowCodeInspection:true` 明确返回 `capability_unavailable`，不会静默忽略或声称已检查代码。原始模型输出与未知字段也不能获得执行授权。
+
+### v2 最短调用顺序
+
+1. `POST /api/tasks`，请求 `{ "workflowVersion": "conversation_only_v2" }`，取得 taskId。
+2. `POST /api/tasks/<taskId>/messages`，请求 `{ "text": "研究 Jev 的架构与原理，不研究成本，不做本机实验。" }`。理解模型须先配置；未配置时只保留原文并明确澄清项，不执行研究。
+3. `GET /api/tasks/<taskId>/brief`，审阅 draft.content、计划和权限，等待 status 为 requirements_ready。下列示例的 1 须替换为实际草稿版本。
+4. `POST .../brief/confirm`，请求 `{ "expectedBriefVersion": 1 }`。此时仍没有启动研究。
+5. `POST .../research/start`，请求 `{ "expectedBriefVersion": 1, "requestId": "由客户端为本次启动生成的唯一ID" }`。重试同一次启动保持相同 requestId。
+6. 使用原有任务详情、`events`/SSE、`report` 和 `export` 查看实际结果。先检查 report.acceptance，而不是仅看 ready 或运行 completed。
+
+v2 当前并行节点上限为 1；多个阶段/审阅角色不代表默认使用不同模型。该流程已提供后端接口，不等于旧界面已具备 Brief 确认按钮；旧前端创建任务仍默认 legacy。
+
 ## 模型输出协议与诊断
 
 未绑定 `claimId` 的节点（包括背景、文献、凝练课题）回传阶段字段、来源引用、候选观察与缺口；`structured.evidenceRelations` 必须省略或为空。`claims` 在这些阶段仅表示有来源的候选观察，不是持久化主张的判断。模型误填关系时要求重新表达，保留反证、限制和实际来源，不能静默删除后通过。
