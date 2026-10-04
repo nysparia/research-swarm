@@ -194,10 +194,10 @@ def main():
     parser.add_argument('--source', type=Path, default=DEFAULT_SOURCE)
     parser.add_argument('--state-dir', type=Path, default=APP_ROOT / '.research-state')
     parser.add_argument('--port', type=int, default=4381)
-    parser.add_argument('--workers', type=int, default=3)
+    parser.add_argument('--workers', type=int, default=30)
     args = parser.parse_args()
     from .workspace import WorkspaceApplication
-    app = WorkspaceApplication(args.source, args.state_dir, max_workers=max(1, min(args.workers, 8)))
+    app = WorkspaceApplication(args.source, args.state_dir, max_workers=max(1, min(args.workers, 30)))
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(app))
     server.daemon_threads = True
     previous_terminate_handler = None

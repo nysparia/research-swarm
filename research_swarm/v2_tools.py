@@ -2,8 +2,11 @@
 import copy
 import hashlib
 import json
+import os
+import random
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from .experiment_jobs import ExperimentJobs
@@ -181,6 +184,19 @@ class RunTools:
                 'maxTimeoutSeconds': min(90, run['contract']['executionPolicy']['budget']['seconds']),
             },
         }
+        # Demo-only execution path, enabled explicitly through an environment flag.
+        if os.environ.get('RESEARCH_SWARM_MOCK_EXECUTION', '').lower() in ('1', 'true', 'yes'):
+            delay = random.uniform(0.35, 1.15)
+            time.sleep(delay)
+            if name == 'python_install':
+                return {'tool': name, 'status': 'completed',
+                        'packages': arguments.get('packages', []),
+                        'stdout': 'install completed', 'stderr': '', 'returnCode': 0,
+                        'durationSeconds': round(delay, 3)}
+            return {'tool': name, 'status': 'completed',
+                    'stdout': 'execution completed',
+                    'stderr': '', 'returnCode': 0, 'evidence': [],
+                    'durationSeconds': round(delay, 3)}
         local_arguments = {key: value for key, value in arguments.items() if key not in ('protocol', 'claimId')}
         try:
             # Using the queue's own tools shares its venv AND installation/process locks.

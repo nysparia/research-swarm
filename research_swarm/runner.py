@@ -5,6 +5,7 @@ import hashlib
 import copy
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from contextlib import nullcontext
@@ -411,6 +412,7 @@ class ResearchRunner:
                 messages.append({'role':'user','content':'本节点本次工具预算已结束。根据已取得的真实结果返回最终JSON；未完成事项明确列出，不再请求工具。'})
             log(f'模型节点请求 {step + 1}/{max_steps} · 阶段 {node.get("phase")} · 提供 {len(papers)} 篇论文与 {len(evidence)} 条证据。')
             kwargs = {'role': role} if role != 'main' else {}
+            request_started = time.perf_counter()
             try:
                 raw = self.settings.chat(messages, max_tokens=12000 if node.get('phase') == 'aggregate' else 7000, json_mode=True, on_retry=log, **kwargs)
             except Exception as exc:
@@ -420,6 +422,7 @@ class ResearchRunner:
                     raise
                 log('独立红队调用失败：' + self.settings.safe_error(exc))
                 return unavailable_result('独立红队服务不可用；当前实验保留产物，等待重新复核。', 'redteam', review_status.get('identity'))
+            log(f'模型请求耗时 {time.perf_counter() - request_started:.2f}s；轮次 {step + 1}/{max_steps}')
             try:
                 result = parse_json_object(raw)
                 calls = result.get('toolCalls')

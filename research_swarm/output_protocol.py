@@ -75,7 +75,7 @@ def validate_relations(items, known, binding=UNSCOPED):
         raise OutputValidationError(issues)
 
 
-def validate_node_output(value, known, node=None):
+def validate_node_output(value, known, node=None, evidence_records=None):
     """Collect independent envelope, reference, stage and relation errors together."""
     from .research_contracts import validate_structured_result
     from .research_cycle import validate_output
@@ -104,7 +104,8 @@ def validate_node_output(value, known, node=None):
     if node and node.get('input', {}).get('researchStep'):
         try:
             validate_output(node['input']['researchStep'], node.get('phase'), structured,
-                            known, node['input'].get('hypothesisId'), node['input'].get('topicMode', 'explore'))
+                            known, node['input'].get('hypothesisId'), node['input'].get('topicMode', 'explore'),
+                            evidence_records)
         except ValueError as error:
             message = str(error)
             import re

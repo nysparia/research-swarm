@@ -48,8 +48,8 @@ class Engine:
             raise ValueError("论文库必须是结构化对象")
         if workflow not in ("gated", "autonomous"):
             raise ValueError("研究流程必须为 gated 或 autonomous")
-        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 16:
-            raise ValueError("并行任务数量必须在 1 到 16 之间")
+        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 30:
+            raise ValueError("并行任务数量必须在 1 到 30 之间")
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._closed = False
@@ -160,6 +160,17 @@ class Engine:
     def snapshot(self):
         with self._lock:
             result = copy.deepcopy(self._state)
+            # An execution node has no measurable progress until every
+            # explicit dependency has completed.  Keep this invariant at the
+            # state boundary as well as in the scheduler, since cycle builders
+            # may put a node back into ``pending`` before its dependencies are
+            # available.
+            by_id = {node["id"]: node for node in result["nodes"]}
+            for node in result["nodes"]:
+                if (node.get("phase") == "execute"
+                        and any(by_id.get(dep, {}).get("status") != "completed"
+                                for dep in (node.get("input") or {}).get("dependsOn", []))):
+                    node["progress"] = 0
             for node in result["nodes"]:
                 if node['status'] == 'failed' and not node.get('error'):
                     entry = next((entry for entry in reversed(node.get('logs', [])) if entry.get('level') == 'error'), {})
@@ -1205,7 +1216,11 @@ class Engine:
                 and node['input'].get('researchStep') not in ('background', 'literature', 'topic')
                 and (cycle.get('topicSelection') or {}).get('status') != 'selected'):
             return False
-        return (all(self._get_node(i)['status'] == 'completed' for i in node['input'].get('dependsOn', []))
+        dependencies_ready = all(self._get_node(i)['status'] == 'completed'
+                                 for i in node['input'].get('dependsOn', []))
+        if node.get('phase') == 'execute' and not dependencies_ready:
+            node['progress'] = 0
+        return (dependencies_ready
                 and all(child['status'] == 'completed' for child in self._children(node['id'])))
 
     def _next_job(self):
@@ -1482,11 +1497,12 @@ class Engine:
             self._commit()
 
     def _validated_output(self, node, output):
+        from .output_protocol import OutputValidationError
         if not isinstance(output, dict):
             raise ValueError("执行器必须返回结构化研究结果")
         result = copy.deepcopy(output)
         if not isinstance(result.get("summary"), str) or not isinstance(result.get("structured", {}), dict):
-            raise ValueError("研究结果缺少有效摘要或结构化内容")
+            raise OutputValidationError([{'code': 'summary_required', 'path': 'summary', 'message': '节点输出缺少 summary'}])
         if not isinstance(result.get("evidenceIds", []), list) or not isinstance(result.get("claims", []), list):
             raise ValueError("研究结果的证据和结论必须是列表")
         generated = result.get("generatedEvidence", [])
@@ -1505,7 +1521,8 @@ class Engine:
             known.add(evidence["id"])
         result["evidenceIds"] = _unique(result.get("evidenceIds", []))
         from .output_protocol import validate_node_output
-        validate_node_output(result, known, node)
+        validate_node_output(result, known, node,
+                             {str(e['id']) for e in self._state.get('evidence', []) if e.get('paperId') and e.get('type') != 'experiment'})
         if set(result["evidenceIds"]) - known:
             raise ValueError("研究结果引用了未知证据 ID")
         claims = []

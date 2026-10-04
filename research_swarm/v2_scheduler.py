@@ -1,6 +1,8 @@
 """Explicit-start scheduler with renewable ownership and fenced result commits."""
 import sqlite3
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 
 from .v2_contracts import DomainError
@@ -52,24 +54,41 @@ class Scheduler:
                     self.launch(pending)
 
     def _run(self, run_id):
-        while not self.closed and self.owns:
-            try:
-                claimed = self.store.claim(run_id, self.owner)
-            except DomainError:
-                return
-            if not claimed:
-                return
-            node, run = claimed
-            try:
-                settings = self.pipeline.settings
-                task_id = self.store.snapshot()['task']['id']
-                context = settings.usage_context(task_id, node['id']) if hasattr(settings, 'usage_context') else nullcontext()
-                with context:
-                    result = self.pipeline.execute(node, run)
-                self.store.finish(node, result)
-            except Exception as exc:
-                if not self._failed(node, run, exc):
+        snapshot = self.store.snapshot()
+        current_run = next((item for item in snapshot['runs'] if item['runId'] == run_id), None)
+        parallelism = ((current_run or {}).get('contract', {}).get('executionPolicy', {})
+                       .get('budget', {}).get('parallelism', 1))
+        stop = threading.Event()
+
+        def worker():
+            while not self.closed and self.owns and not stop.is_set():
+                try:
+                    claimed = self.store.claim(run_id, self.owner)
+                except DomainError:
                     return
+                if not claimed:
+                    return
+                node, run = claimed
+                started = time.perf_counter()
+                try:
+                    settings = self.pipeline.settings
+                    task_id = self.store.snapshot()['task']['id']
+                    context = settings.usage_context(task_id, node['id']) if hasattr(settings, 'usage_context') else nullcontext()
+                    with context:
+                        result = self.pipeline.execute(node, run)
+                    self.store.finish(node, result)
+                    elapsed = time.perf_counter() - started
+                    self.store.metric('node_timing', {'runId': run_id, 'nodeId': node['id'],
+                                                      'stage': node.get('stage'), 'seconds': round(elapsed, 3)})
+                except Exception as exc:
+                    if not self._failed(node, run, exc):
+                        stop.set()
+                        return
+
+        with ThreadPoolExecutor(max_workers=max(1, min(parallelism, 8)), thread_name_prefix='v2-node') as pool:
+            futures = [pool.submit(worker) for _ in range(max(1, min(parallelism, 8)))]
+            for future in futures:
+                future.result()
 
     def _failed(self, node, run, error):
         from .v2_exceptions import accept, host_type

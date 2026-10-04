@@ -10,7 +10,7 @@ for argument in "$@"; do
   --port PORT       本地服务端口，默认 4381
   --source PATH     论文检索结构的来源目录
   --state-dir PATH  任务和配置保存目录，默认项目 .research-state
-  --workers COUNT   并行 worker 数量，默认 3
+  --workers COUNT   并行 worker 数量，默认 30
   -h, --help        显示帮助；不创建环境或安装依赖
 
 使用项目 .venv，要求 Python 3.10 或更高版本。

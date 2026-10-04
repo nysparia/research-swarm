@@ -3,6 +3,7 @@
 STAGE_INSTRUCTIONS = {
     'Retrieval': '围绕当前目标筛选资料。根据已返回候选决定需要读哪些原文页或补充哪个检索式；没有资料时保留缺口，不伪造论文。',
     'Claim Extraction': '从实际资料提取可核查的候选主张、反证、适用条件和来源。不要自己判定 supported。复现任务先从原论文定位指标与条件，再填写 reproductionTarget。',
+    'Evidence Review': '逐篇检查 papers 与 evidence。对于每篇实际可用的 paper，至少提取一个由真实 evidenceIds 支持的明确 claim；当一篇 paper 支持多个相互独立的结论时，应拆分为多个 claims，而不是把全文压缩成一个笼统结论。证据不足时不要编造 claim，将缺口写入 unresolved。',
     'Epistemic Analysis': '解释已审阅主张之间的一致、冲突、适用范围和剩余不确定性。直接回答目标问题；不能把未定或同模型复核改写成已验证结论。',
     'Validation Planning': '只规划契约允许且确有必要的验证。validationPlan:[{kind:"experiment/replication",claimIds:[当前目标已有主张ID],reason:"为什么需要实际验证"}]；没有必要则返回空列表。仅有 allow 权限不代表必须执行。不要在同一响应中新建主张再假装它已有宿主 ID；未授权实验或范围外方向只放 optionalNextActions。缺少原论文指标时不编造复现目标。',
     'Replication': '仅复现输入中已有 reproductionTarget 的主张，使用其 claimId、指标、预定容差和非空 conditions。按原协议执行，不能任意缩小规模后声称成功。没有目标时说明资料缺口。',

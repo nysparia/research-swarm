@@ -113,6 +113,10 @@ class ResearchStore:
         db.execute('INSERT INTO outbox(event) VALUES(?)',(event,))
         return event
 
+    def metric(self, kind, payload):
+        with self.transaction() as db:
+            self.event(db, 'metric.' + kind, bounded(payload, 20000))
+
     def snapshot(self):
         with self.connect() as db:
             db.execute('BEGIN')

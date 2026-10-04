@@ -43,6 +43,15 @@ def _ids(owner, known):
     return list(dict.fromkeys(ids))
 
 
+def _required_ids(owner, known, label='??', paper_evidence=None):
+    ids = _ids(owner, known)
+    if not ids:
+        raise ValueError(f'{label}必须至少引用一条真实论文证据')
+    if paper_evidence is not None and not any(str(eid) in paper_evidence for eid in ids):
+        raise ValueError('??????????????????')
+    return ids
+
+
 def validate_hypotheses(items, known, required=False):
     if not isinstance(items, list) or len(items) > 6 or (required and not items):
         raise ValueError('需要一到六个具体猜想；综合阶段可以不提出新猜想')
@@ -60,10 +69,11 @@ def validate_hypotheses(items, known, required=False):
 from .scientific_validation import validate_protocol, validate_verdict
 
 
-def validate_output(step, phase, structured, known, hypothesis_id=None, topic_mode='explore'):
+def validate_output(step, phase, structured, known, hypothesis_id=None, topic_mode='explore', paper_evidence=None):
     if step not in LABELS:
         raise ValueError('未知研究阶段')
     if step == 'background':
+        _required_ids(_object(structured, 'background'), known, '????', paper_evidence)
         _text(_object(structured, 'background'), ('context', 'boundaries'))
     elif step == 'literature':
         value = _object(structured, 'literatureReview'); _text(value, ('summary',)); _ids(value, known)
@@ -294,6 +304,27 @@ def accept(engine, node, output, token):
     elif step in ('background', 'literature', 'topic'):
         key = {'background': 'background', 'literature': 'literatureReview', 'topic': 'researchTopic'}[step]
         cycle['topic' if step == 'topic' else key] = copy.deepcopy(structured[key])
+        if step == 'background':
+            output['evidenceIds'] = list(dict.fromkeys(
+                output.get('evidenceIds', []) + structured['background'].get('evidenceIds', [])))
+        # Stage-specific evidence IDs must also be promoted to the node-level
+        # envelope.  The workbench uses output.evidenceIds to build the
+        # node's evidence set; leaving IDs only under literatureReview makes
+        # a real literature result appear as "已定位证据 0".
+        if step == 'literature':
+            located = list(dict.fromkeys(output.get('evidenceIds', []) +
+                                         structured['literatureReview'].get('evidenceIds', [])))
+            output['evidenceIds'] = located
+            # A literature pass can return sources without a candidate claim.
+            # Add a deliberately conservative, source-backed observation so
+            # the result remains inspectable without inventing a scientific
+            # conclusion.
+            if located and not output.get('claims'):
+                output['claims'] = [{
+                    'text': f'文献核对已定位 {len(located)} 条可追溯证据；其科学含义仍需逐项核验。',
+                    'evidenceIds': located,
+                    'limitations': '这是证据定位记录，不代表论文结论已被独立复核。',
+                }]
     elif step == 'hypothesis_generation':
         if _hypotheses(engine, structured['hypotheses'], node):
             if node['id'] == 'central': return True

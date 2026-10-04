@@ -1,6 +1,8 @@
 param(
     [int]$Port = 4381,
     [string]$Source = '',
+    [ValidateRange(1, 30)]
+    [int]$Workers = 30,
     [switch]$NoBrowser
 )
 $ErrorActionPreference = 'Stop'
@@ -25,5 +27,5 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'dist\index.html'))) {
 }
 $env:PYTHONIOENCODING = 'utf-8'
 if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
-if ($Source) { & python -X utf8 -m research_swarm --source $Source --port $Port }
-else { & python -X utf8 -m research_swarm --port $Port }
+if ($Source) { & python -X utf8 -m research_swarm --source $Source --port $Port --workers $Workers }
+else { & python -X utf8 -m research_swarm --port $Port --workers $Workers }
